@@ -22,6 +22,9 @@ void proxmark5_uart_deinit(void) {
 
 // proxmark5 UART sends one byte: start bit + 8 data bits + stop bit, LSB first
 void proxmark5_uart_send_byte(uint8_t data) {
+    // Disable interrupts for the entire byte to prevent FreeRTOS/BLE/USB
+    // interrupts from stretching any bit period and causing framing errors.
+    FURI_CRITICAL_ENTER();
     // start bit
     furi_hal_gpio_write(PROXMARK5_GPIO_UART, false);
     furi_delay_us(PROXMARK5_BIT_US);
@@ -33,6 +36,7 @@ void proxmark5_uart_send_byte(uint8_t data) {
     // stop bit
     furi_hal_gpio_write(PROXMARK5_GPIO_UART, true);
     furi_delay_us(PROXMARK5_BIT_US);
+    FURI_CRITICAL_EXIT();
 }
 
 // proxmark5 UART sends multiple bytes of data
