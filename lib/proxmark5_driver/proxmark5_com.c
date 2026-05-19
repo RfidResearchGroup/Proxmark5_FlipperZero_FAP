@@ -16,7 +16,6 @@ static void proxmark5_cc_ctrl_init(void) {
 
 // Deinitialize proxmark5 communication control, resets the GPIO pin to input state
 static void proxmark5_cc_ctrl_deinit(void) {
-    furi_hal_gpio_write(PROXMARK5_GPIO_CC, false);
     furi_hal_gpio_init_simple(PROXMARK5_GPIO_CC, GpioModeInput);
 }
 
@@ -38,7 +37,10 @@ void proxmark5_com_deinit(void) {
     proxmark5_cc_ctrl_deinit();
     proxmark5_uart_deinit();
     proxmark5_spi_deinit();
-    furi_hal_power_disable_otg(); // Disable OTG to cut off power to proxmark5
+    // Ensure OTG is disabled to cut off power to proxmark5
+    if(furi_hal_power_is_otg_enabled()) {
+        furi_hal_power_disable_otg();
+    }
 }
 
 /**
@@ -47,6 +49,17 @@ void proxmark5_com_deinit(void) {
  * @return true if handshake is successful, false otherwise
  */
 bool proxmark5_com_handshake(void) {
+    // TODO DXL: for test cc line & 5v off to make pm5 offline.
+    // if(furi_hal_power_is_otg_enabled()) {
+    //     furi_hal_power_disable_otg();
+    // }
+    // FURI_LOG_I(PROXMARK5_LOG_TAG, "Test cc line");
+    // proxmark5_cc_ctrl_init();
+    // furi_delay_ms(500);
+    // proxmark5_cc_ctrl_deinit();
+    // furi_delay_ms(500);
+    // return false;
+
     // If OTG is not enabled, enable it to power the proxmark5(5v)
     if(!furi_hal_power_is_otg_enabled()) {
         furi_hal_power_enable_otg();
