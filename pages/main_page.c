@@ -1,6 +1,7 @@
 #include <furi.h>
 #include <fmps_cxt_icons.h>
 #include <gui/canvas.h>
+#include <gui/elements.h>
 #include "main_page.h"
 #include "proxmark5_com.h"
 
@@ -28,6 +29,8 @@ void draw_handshake_ok_message(Canvas* canvas) {
     canvas_set_font(canvas, FontPrimary);
     canvas_draw_str(canvas, 45, 15, "Proxmark5");
     canvas_draw_str(canvas, 45, 30, "Iceman Edition");
+    // Show the operate button
+    elements_button_right(canvas, "Menu");
 }
 
 // Draw the handshake running message on the canvas
@@ -59,6 +62,28 @@ void draw_handshake_running(Canvas* canvas, uint8_t loading_phase) {
     if(loading_phase >= 3) {
         canvas_draw_box(canvas, 69, 59, 1, 1);
     }
+}
+
+// The input callback for the main page,
+// it will handle the right button press to trigger the operate callback
+static bool main_page_input_callback(InputEvent* event, void* ctx) {
+    MainPage* page = ctx;
+    if(!page || !event || !page->operate_callback) {
+        return false;
+    }
+
+    MainPageModel* model = view_get_model(page->canvas_view);
+
+    // Only handle the right button short press event when the handshake is successful
+    // and the operate callback is set
+    if((event->type == InputTypeShort) &&
+       (event->key == InputKeyRight || event->key == InputKeyOk) &&
+       (model->state == MainPageShowDeviceInfo)) {
+        page->operate_callback(page->operate_callback_context);
+        return true;
+    }
+
+    return false;
 }
 
 // The thread for proxmark5 communication
@@ -150,13 +175,16 @@ void proxmark5_handshake_task_start(MainPage* page) {
  * 
  * @return MainPage* The created main page
  */
-MainPage* main_page_create(void) {
+MainPage*
+    main_page_create(MainPageOperateCallback operate_callback, void* operate_callback_context) {
     MainPage* main_page = calloc(1, sizeof(MainPage));
     if(!main_page) {
         return NULL;
     }
     // Allocate the canvas view for the main page
     main_page->canvas_view = view_alloc();
+    main_page->operate_callback = operate_callback;
+    main_page->operate_callback_context = operate_callback_context;
 
     // Set the context for the canvas view callbacks(Working on the like 'view_set_input_callback')
     view_set_context(main_page->canvas_view, main_page);
@@ -171,6 +199,7 @@ MainPage* main_page_create(void) {
 
     // Set the draw callback for the canvas view
     view_set_draw_callback(main_page->canvas_view, fmps_cxt_canvas_draw_callback);
+    view_set_input_callback(main_page->canvas_view, main_page_input_callback);
 
     // Start the proxmark5 handshake thread
     proxmark5_handshake_task_start(main_page);
