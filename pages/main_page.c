@@ -14,6 +14,8 @@ typedef struct {
     MainPage* page;
     // The state of the main page, it can be used to determine what to display on the canvas
     MainPageState state;
+    // Loading dots animation phase: 0..3 filled dots
+    uint8_t loading_phase;
 } MainPageModel;
 
 // Draw the handshake successful message on the canvas
@@ -25,11 +27,11 @@ void draw_handshake_ok_message(Canvas* canvas) {
     canvas_set_color(canvas, ColorBlack);
     canvas_set_font(canvas, FontPrimary);
     canvas_draw_str(canvas, 45, 15, "Proxmark5");
-    canvas_draw_str(canvas, 45, 30, "(Iceman Edition)");
+    canvas_draw_str(canvas, 45, 30, "Iceman Edition");
 }
 
 // Draw the handshake running message on the canvas
-void draw_handshake_running(Canvas* canvas) {
+void draw_handshake_running(Canvas* canvas, uint8_t loading_phase) {
     // Draw the icons
     canvas_draw_icon(canvas, 3, 3, &I_connect_me);
     canvas_draw_icon(canvas, 88, 4, &I_iceman_logo);
@@ -42,21 +44,45 @@ void draw_handshake_running(Canvas* canvas) {
     canvas_draw_line(canvas, 77, 19, 77, 15);
     // Draw the text
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str(canvas, 9, 55, "Proxmark5 connecting");
+    canvas_draw_str(canvas, 36, 52, "Connecting");
+    // Draw the loading animation (3 dots)
+    canvas_draw_frame(canvas, 58, 58, 3, 3);
+    canvas_draw_frame(canvas, 63, 58, 3, 3);
+    canvas_draw_frame(canvas, 68, 58, 3, 3);
+    // Fill the dots according to the loading phase
+    if(loading_phase >= 1) {
+        canvas_draw_box(canvas, 59, 59, 1, 1);
+    }
+    if(loading_phase >= 2) {
+        canvas_draw_box(canvas, 64, 59, 1, 1);
+    }
+    if(loading_phase >= 3) {
+        canvas_draw_box(canvas, 69, 59, 1, 1);
+    }
 }
 
 // The thread for proxmark5 communication
 static int32_t proxmark5_handshake_task(void* context) {
     MainPage* page = context;
+    uint8_t phase = 0;
+
     while(1) {
         // If the thread is marked as not running, exit the loop
         if(!page->proxmark5_handshake_thread_running) {
             break;
         }
+
+        // Advance loading animation while waiting for handshake
+        phase = (phase + 1) % 4;
+        MainPageModel* model = view_get_model(page->canvas_view);
+        if(model->state == MainPageHandshakeRunning) {
+            model->loading_phase = phase;
+            view_commit_model(page->canvas_view, true);
+        }
+
         // Try to perform the proxmark5 handshake, if successful, show the success message and exit the loop
         if(proxmark5_com_handshake()) {
             // Switch to the success state and update the view to show the success message
-            MainPageModel* model = view_get_model(page->canvas_view);
             model->state = MainPageShowDeviceInfo;
             view_commit_model(page->canvas_view, true);
             FURI_LOG_I("proxmark5_handshake_task", "Proxmark5 handshake successful");
@@ -84,7 +110,7 @@ static void fmps_cxt_canvas_draw_callback(Canvas* canvas, void* ctx) {
     MainPageModel* model = ctx;
     switch(model->state) {
     case MainPageHandshakeRunning:
-        draw_handshake_running(canvas);
+        draw_handshake_running(canvas, model->loading_phase);
         break;
     case MainPageShowDeviceInfo:
         draw_handshake_ok_message(canvas);
@@ -141,6 +167,7 @@ MainPage* main_page_create(void) {
     MainPageModel* model = view_get_model(main_page->canvas_view);
     model->page = main_page;
     model->state = MainPageHandshakeRunning; // Default to the handshake running state
+    model->loading_phase = 0;
 
     // Set the draw callback for the canvas view
     view_set_draw_callback(main_page->canvas_view, fmps_cxt_canvas_draw_callback);

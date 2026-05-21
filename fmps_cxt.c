@@ -6,6 +6,7 @@
 
 // For GUI:
 //  https://github.com/jamisonderek/flipper-zero-tutorials/wiki/User-Interface#viewdisptacher
+//  https://brodan.biz/blog/a-visual-guide-to-flipper-zero-gui-components/
 
 // The callback for the back event, it will stop the view dispatcher which will exit the app
 static bool fmps_cxt_back_event_callback(void* context) {
