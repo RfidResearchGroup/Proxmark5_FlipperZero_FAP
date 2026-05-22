@@ -8,7 +8,7 @@
 // proxmark5 UART initialization, sets up the GPIO pin for output
 void proxmark5_uart_init(void) {
     // Initialize PB2 as push-pull output, default high
-    furi_hal_gpio_init_simple(PROXMARK5_GPIO_UART, GpioModeOutputPushPull);
+    furi_hal_gpio_init_simple(PROXMARK5_GPIO_UART, GpioModeOutputOpenDrain);
     furi_hal_gpio_write(PROXMARK5_GPIO_UART, true);
 }
 
