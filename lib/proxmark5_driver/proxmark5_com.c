@@ -78,6 +78,9 @@ static int32_t proxmark5_com_spi_task(void* context) {
     uint8_t packet[BUFFER_SIZE];
 
     while(com_context->thread_running) {
+        // Reset length header before spi receive to avoid processing stale length in case of timeout
+        spi_len_header[0] = 0;
+        spi_len_header[1] = 0;
         if(!proxmark5_spi_receive_data(spi_len_header, sizeof(spi_len_header), 100)) {
             furi_delay_ms(100);
             continue;
@@ -85,12 +88,16 @@ static int32_t proxmark5_com_spi_task(void* context) {
 
         uint16_t data_length = pm5_u16_le(spi_len_header);
         if(data_length == 0 || data_length > BUFFER_SIZE) {
-            FURI_LOG_W(PROXMARK5_LOG_TAG, "Invalid SPI packet length: %u", data_length);
+            if(data_length > 0) {
+                FURI_LOG_W(PROXMARK5_LOG_TAG, "Invalid SPI packet length: %u", data_length);
+            }
             furi_delay_ms(100);
             continue;
         }
 
-        if(!proxmark5_spi_receive_data(packet, data_length, 100)) {
+        FURI_LOG_I(PROXMARK5_LOG_TAG, "Data length to receive: %u", data_length);
+
+        if(!proxmark5_spi_receive_data(packet, data_length, 2000)) {
             FURI_LOG_W(PROXMARK5_LOG_TAG, "SPI receive timeout, packet dropped");
             furi_delay_ms(100);
             continue;
