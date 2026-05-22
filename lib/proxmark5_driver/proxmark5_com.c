@@ -22,6 +22,9 @@ typedef struct {
     // Thread for handling SPI communication
     FuriThread* thread_rx_spi;
     bool thread_running;
+
+    // RX packet buffer stored in context (heap-backed via com_context)
+    uint8_t packet[BUFFER_SIZE];
 } Proxmark5ComContext;
 
 // Global context for proxmark5 communication, it will be initialized in proxmark5_com_init
@@ -75,7 +78,6 @@ static void proxmark5_cc_ctrl_deinit(void) {
 static int32_t proxmark5_com_spi_task(void* context) {
     UNUSED(context);
     uint8_t spi_len_header[2];
-    uint8_t packet[BUFFER_SIZE];
 
     while(com_context->thread_running) {
         // Reset length header before spi receive to avoid processing stale length in case of timeout
@@ -97,17 +99,17 @@ static int32_t proxmark5_com_spi_task(void* context) {
 
         FURI_LOG_I(PROXMARK5_LOG_TAG, "Data length to receive: %u", data_length);
 
-        if(!proxmark5_spi_receive_data(packet, data_length, 2000)) {
+        if(!proxmark5_spi_receive_data(com_context->packet, data_length, 2000)) {
             FURI_LOG_W(PROXMARK5_LOG_TAG, "SPI receive timeout, packet dropped");
             furi_delay_ms(100);
             continue;
         }
 
-        if(proxmark5_com_update_handshake_match(packet, data_length)) {
+        if(proxmark5_com_update_handshake_match(com_context->packet, data_length)) {
             continue;
         }
 
-        if(!proxmark5_frame_handle_packet(packet, data_length)) {
+        if(!proxmark5_frame_handle_packet(com_context->packet, data_length)) {
             FURI_LOG_W(PROXMARK5_LOG_TAG, "Invalid SPI response frame, dropped");
         }
     }
@@ -254,10 +256,19 @@ bool proxmark5_com_send_spi(uint8_t* data, size_t length) {
         return false;
     }
 
+    // Send length header first, proxmark5 expects 2 bytes of length header before the actual data
+    if(!proxmark5_spi_send_data((uint8_t*)&length, 2, 1000)) {
+        FURI_LOG_W(PROXMARK5_LOG_TAG, "SPI send failed at length header");
+        return false;
+    }
+
+    // Send the actual data after the length header
     if(!proxmark5_spi_send_data(data, length, 1000)) {
         FURI_LOG_W(PROXMARK5_LOG_TAG, "SPI send failed");
         return false;
     }
 
-    return true;
+    // DXL: The last byte must be 0x00 to keep the proxmark5 no data rx.
+    uint8_t end_byte = 0x00;
+    return proxmark5_spi_send_data(&end_byte, 1, 1000);
 }

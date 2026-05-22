@@ -164,6 +164,7 @@ void proxmark5_handshake_task_start(MainPage* page) {
         return;
     }
     // Allocate and start the proxmark5 handshake thread
+    // Handshake path may call deep PM3 driver code; keep a safer stack budget on F0.
     page->proxmark5_handshake_thread =
         furi_thread_alloc_ex("HandshakeTask", 1024, proxmark5_handshake_task, page);
     page->proxmark5_handshake_thread_running = true;

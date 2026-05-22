@@ -20,12 +20,22 @@ static void fmps_cxt_open_operate_page(void* context) {
     view_dispatcher_send_custom_event(app->view_dispatcher, Proxmark5CustomEventOpenOperatePage);
 }
 
+static void fmps_cxt_open_read_hitag2_page(void* context) {
+    Proxmark5App* app = context;
+    view_dispatcher_send_custom_event(
+        app->view_dispatcher, Proxmark5CustomEventOpenReadHitag2Page);
+}
+
 static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
     Proxmark5App* app = context;
 
     switch(event) {
     case Proxmark5CustomEventOpenOperatePage:
         view_dispatcher_switch_to_view(app->view_dispatcher, OperatePageViewId);
+        return true;
+    case Proxmark5CustomEventOpenReadHitag2Page:
+        view_dispatcher_switch_to_view(app->view_dispatcher, ReadHitag2PageViewId);
+        read_hitag2_page_start(app->read_hitag2_page);
         return true;
     default:
         return false;
@@ -35,6 +45,12 @@ static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
 static uint32_t operate_page_previous_callback(void* context) {
     UNUSED(context);
     return MainPageViewId;
+}
+
+static uint32_t read_hitag2_page_previous_callback(void* context) {
+    Proxmark5App* app = context;
+    read_hitag2_page_stop(app->read_hitag2_page);
+    return OperatePageViewId;
 }
 
 Proxmark5App* proxmark5_app_alloc() {
@@ -51,11 +67,21 @@ Proxmark5App* proxmark5_app_alloc() {
     view_dispatcher_add_view(app->view_dispatcher, MainPageViewId, app->main_page->canvas_view);
 
     // Create and add the operate submenu page to the view dispatcher
-    app->operate_page = operate_page_create();
+    app->operate_page = operate_page_create(fmps_cxt_open_read_hitag2_page, app);
     view_set_previous_callback(
         submenu_get_view(app->operate_page->submenu), operate_page_previous_callback);
     view_dispatcher_add_view(
         app->view_dispatcher, OperatePageViewId, submenu_get_view(app->operate_page->submenu));
+
+    // Create and add ReadHitag2 page to the view dispatcher
+    app->read_hitag2_page = read_hitag2_page_create();
+    view_set_previous_callback(
+        read_hitag2_page_get_view(app->read_hitag2_page), read_hitag2_page_previous_callback);
+    view_set_context(read_hitag2_page_get_view(app->read_hitag2_page), app);
+    view_dispatcher_add_view(
+        app->view_dispatcher,
+        ReadHitag2PageViewId,
+        read_hitag2_page_get_view(app->read_hitag2_page));
 
     // Set the back event callback to handle the back button press, and pass the app context to it
     view_dispatcher_set_event_callback_context(app->view_dispatcher, app);
@@ -71,6 +97,7 @@ void proxmark5_app_free(Proxmark5App* app) {
 
     view_dispatcher_remove_view(app->view_dispatcher, MainPageViewId);
     view_dispatcher_remove_view(app->view_dispatcher, OperatePageViewId);
+    view_dispatcher_remove_view(app->view_dispatcher, ReadHitag2PageViewId);
     if(app->main_page) {
         main_page_free(app->main_page);
         app->main_page = NULL;
@@ -78,6 +105,10 @@ void proxmark5_app_free(Proxmark5App* app) {
     if(app->operate_page) {
         operate_page_free(app->operate_page);
         app->operate_page = NULL;
+    }
+    if(app->read_hitag2_page) {
+        read_hitag2_page_free(app->read_hitag2_page);
+        app->read_hitag2_page = NULL;
     }
     view_dispatcher_free(app->view_dispatcher);
     furi_record_close(RECORD_GUI);

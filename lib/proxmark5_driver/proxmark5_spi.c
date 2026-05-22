@@ -43,7 +43,8 @@ bool proxmark5_spi_send_data(uint8_t* data, size_t length, uint32_t timeout) {
  */
 bool proxmark5_spi_receive_data(uint8_t* buffer, size_t length, uint32_t timeout) {
     furi_hal_spi_acquire(spi_bus);
-    bool ret = furi_hal_spi_bus_rx(spi_bus, buffer, length, timeout);
+    // bool ret = furi_hal_spi_bus_rx(spi_bus, buffer, length, timeout);
+    bool ret = furi_hal_spi_bus_trx(spi_bus, NULL, buffer, length, timeout);
     furi_hal_spi_release(spi_bus);
     return ret;
 }
