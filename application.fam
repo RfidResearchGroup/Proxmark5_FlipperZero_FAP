@@ -24,6 +24,7 @@ App(
                 "proxmark5_uart.c",
                 "proxmark5_spi.c",
                 "proxmark5_com.c",
+                "proxmark5_frame.c",
             ],
         ),
     ],
