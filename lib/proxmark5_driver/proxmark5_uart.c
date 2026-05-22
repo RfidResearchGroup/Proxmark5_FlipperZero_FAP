@@ -20,6 +20,12 @@ void proxmark5_uart_deinit(void) {
     furi_hal_gpio_init_simple(PROXMARK5_GPIO_UART, GpioModeInput);
 }
 
+// Check if the proxmark5 UART line is idle (high) or busy (low)
+bool proxmark5_uart_is_idle(void) {
+    // If the line is high, it's idle. If it's low, it's currently transmitting.
+    return furi_hal_gpio_read(PROXMARK5_GPIO_UART);
+}
+
 // proxmark5 UART sends one byte: start bit + 8 data bits + stop bit, LSB first
 void proxmark5_uart_send_byte(uint8_t data) {
     // Disable interrupts for the entire byte to prevent FreeRTOS/BLE/USB
