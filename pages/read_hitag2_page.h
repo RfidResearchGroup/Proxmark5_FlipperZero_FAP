@@ -5,7 +5,11 @@
 
 typedef struct ReadHitag2Page ReadHitag2Page;
 
-ReadHitag2Page* read_hitag2_page_create(void);
+// Invoked when the user leaves the page via the on-screen "Back" (left) button.
+typedef void (*ReadHitag2PageBackCallback)(void* context);
+
+ReadHitag2Page*
+    read_hitag2_page_create(ReadHitag2PageBackCallback back_callback, void* back_callback_context);
 void read_hitag2_page_free(ReadHitag2Page* read_hitag2_page);
 
 View* read_hitag2_page_get_view(ReadHitag2Page* read_hitag2_page);

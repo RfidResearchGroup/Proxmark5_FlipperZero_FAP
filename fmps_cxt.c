@@ -47,9 +47,10 @@ static uint32_t operate_page_previous_callback(void* context) {
     return MainPageViewId;
 }
 
+// Context is the view's context, which is the page itself (set in read_hitag2_page_create).
 static uint32_t read_hitag2_page_previous_callback(void* context) {
-    Proxmark5App* app = context;
-    read_hitag2_page_stop(app->read_hitag2_page);
+    ReadHitag2Page* read_hitag2_page = context;
+    read_hitag2_page_stop(read_hitag2_page);
     return OperatePageViewId;
 }
 
@@ -74,10 +75,11 @@ Proxmark5App* proxmark5_app_alloc() {
         app->view_dispatcher, OperatePageViewId, submenu_get_view(app->operate_page->submenu));
 
     // Create and add ReadHitag2 page to the view dispatcher
-    app->read_hitag2_page = read_hitag2_page_create();
+    // The left "Back" button returns to the functions menu, same destination as the
+    // hardware back button below.
+    app->read_hitag2_page = read_hitag2_page_create(fmps_cxt_open_operate_page, app);
     view_set_previous_callback(
         read_hitag2_page_get_view(app->read_hitag2_page), read_hitag2_page_previous_callback);
-    view_set_context(read_hitag2_page_get_view(app->read_hitag2_page), app);
     view_dispatcher_add_view(
         app->view_dispatcher,
         ReadHitag2PageViewId,
