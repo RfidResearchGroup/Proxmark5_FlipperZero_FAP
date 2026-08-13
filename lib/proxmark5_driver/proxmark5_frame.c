@@ -18,9 +18,23 @@ typedef struct {
     PacketResponseNG cache[PM3_RESPONSE_CACHE_SIZE];
     uint8_t head;
     uint8_t tail;
+    // The SPI RX thread enqueues while worker threads take; the ring needs a lock.
+    FuriMutex* mutex;
 } Proxmark5FrameContext;
 
 static Proxmark5FrameContext frame_context;
+
+static void proxmark5_frame_lock(void) {
+    if(frame_context.mutex) {
+        furi_mutex_acquire(frame_context.mutex, FuriWaitForever);
+    }
+}
+
+static void proxmark5_frame_unlock(void) {
+    if(frame_context.mutex) {
+        furi_mutex_release(frame_context.mutex);
+    }
+}
 
 static uint16_t pm5_u16_le(uint8_t* data) {
     return (uint16_t)data[0] | ((uint16_t)data[1] << 8);
@@ -51,6 +65,8 @@ static uint16_t proxmark5_frame_crc14443a(uint8_t* data, size_t length) {
 }
 
 static bool proxmark5_frame_enqueue(PacketResponseNG* packet) {
+    proxmark5_frame_lock();
+
     uint8_t next_head = (uint8_t)((frame_context.head + 1U) % PM3_RESPONSE_CACHE_SIZE);
     if(next_head == frame_context.tail) {
         FURI_LOG_W(PROXMARK5_LOG_TAG, "Packet cache overflow, dropping oldest entry");
@@ -59,6 +75,8 @@ static bool proxmark5_frame_enqueue(PacketResponseNG* packet) {
 
     frame_context.cache[frame_context.head] = *packet;
     frame_context.head = next_head;
+
+    proxmark5_frame_unlock();
     return true;
 }
 
@@ -242,11 +260,22 @@ static bool proxmark5_frame_handle_old_packet(uint8_t* packet, size_t packet_len
 
 void proxmark5_frame_init(void) {
     memset(&frame_context, 0, sizeof(frame_context));
+    frame_context.mutex = furi_mutex_alloc(FuriMutexTypeNormal);
+}
+
+void proxmark5_frame_deinit(void) {
+    if(frame_context.mutex) {
+        FuriMutex* mutex = frame_context.mutex;
+        frame_context.mutex = NULL;
+        furi_mutex_free(mutex);
+    }
 }
 
 void proxmark5_frame_reset(void) {
+    proxmark5_frame_lock();
     frame_context.head = 0;
     frame_context.tail = 0;
+    proxmark5_frame_unlock();
 }
 
 void clearCommandBuffer(void) {
@@ -267,12 +296,21 @@ bool proxmark5_frame_handle_packet(uint8_t* packet, size_t packet_len) {
 }
 
 bool proxmark5_frame_pop(PacketResponseNG* packet) {
-    if(packet == NULL || frame_context.head == frame_context.tail) {
+    if(packet == NULL) {
+        return false;
+    }
+
+    proxmark5_frame_lock();
+
+    if(frame_context.head == frame_context.tail) {
+        proxmark5_frame_unlock();
         return false;
     }
 
     *packet = frame_context.cache[frame_context.tail];
     frame_context.tail = (uint8_t)((frame_context.tail + 1U) % PM3_RESPONSE_CACHE_SIZE);
+
+    proxmark5_frame_unlock();
     return true;
 }
 
@@ -280,39 +318,48 @@ bool proxmark5_frame_get_response(PacketResponseNG* packet) {
     return proxmark5_frame_pop(packet);
 }
 
+// Compacts the ring in place, preserving the order of the surviving entries.
+//
+// This previously built a `PacketResponseNG temp[PM3_RESPONSE_CACHE_SIZE]` local. With
+// sizeof(PacketResponseNG) at ~560 bytes that is ~9KB of stack, far past the budget of
+// the caller's thread, so it overflowed as soon as the ring was non-empty -- i.e. only
+// after the PM3 had actually replied, which is why it looked like a response-handling
+// bug rather than a stack one.
 bool proxmark5_frame_take_by_cmd(uint16_t cmd, PacketResponseNG* packet) {
-    if(packet == NULL || frame_context.head == frame_context.tail) {
+    if(packet == NULL) {
         return false;
     }
 
-    PacketResponseNG temp[PM3_RESPONSE_CACHE_SIZE];
-    uint8_t temp_count = 0;
+    proxmark5_frame_lock();
+
+    if(frame_context.head == frame_context.tail) {
+        proxmark5_frame_unlock();
+        return false;
+    }
+
+    uint8_t read_idx = frame_context.tail;
+    uint8_t write_idx = frame_context.tail;
     bool found = false;
-    PacketResponseNG found_packet;
 
-    while(frame_context.head != frame_context.tail) {
-        PacketResponseNG current = frame_context.cache[frame_context.tail];
-        frame_context.tail = (uint8_t)((frame_context.tail + 1U) % PM3_RESPONSE_CACHE_SIZE);
+    while(read_idx != frame_context.head) {
+        PacketResponseNG* current = &frame_context.cache[read_idx];
 
-        if(!found && current.cmd == cmd) {
+        if(!found && current->cmd == cmd) {
+            *packet = *current;
             found = true;
-            found_packet = current;
         } else {
-            temp[temp_count++] = current;
+            if(write_idx != read_idx) {
+                frame_context.cache[write_idx] = *current;
+            }
+            write_idx = (uint8_t)((write_idx + 1U) % PM3_RESPONSE_CACHE_SIZE);
         }
+
+        read_idx = (uint8_t)((read_idx + 1U) % PM3_RESPONSE_CACHE_SIZE);
     }
 
-    frame_context.head = 0;
-    frame_context.tail = 0;
-    for(uint8_t i = 0; i < temp_count; i++) {
-        frame_context.cache[frame_context.head] = temp[i];
-        frame_context.head = (uint8_t)((frame_context.head + 1U) % PM3_RESPONSE_CACHE_SIZE);
-    }
+    frame_context.head = write_idx;
 
-    if(found) {
-        *packet = found_packet;
-    }
-
+    proxmark5_frame_unlock();
     return found;
 }
 

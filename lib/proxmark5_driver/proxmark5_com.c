@@ -167,6 +167,8 @@ void proxmark5_com_init(void) {
  */
 void proxmark5_com_deinit(void) {
     proxmark5_com_rx_spi_thread_stop();
+    // After the RX thread is joined, so nothing can touch the ring afterwards.
+    proxmark5_frame_deinit();
     proxmark5_cc_ctrl_deinit();
     proxmark5_uart_deinit();
     proxmark5_spi_deinit();
