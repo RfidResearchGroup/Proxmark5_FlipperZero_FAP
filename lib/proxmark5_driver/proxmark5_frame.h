@@ -7,6 +7,7 @@
 #include "pm3_cmd.h"
 
 void proxmark5_frame_init(void);
+void proxmark5_frame_deinit(void);
 void proxmark5_frame_reset(void);
 
 // Parse packet, print debug packets, and cache non-print responses.
