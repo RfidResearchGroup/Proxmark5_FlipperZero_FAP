@@ -76,7 +76,11 @@ App id: `fmps_cxt` — category RFID.
 
 Intended for **security research, education, and cards/systems you own or are authorized to test**. Do not use against third-party payment, access-control, or laundry systems without permission.
 
-Upstream Proxmark3 is GPL-3.0; this FAP is distributed as a derivative of DXL/RRG work — see `NOTICE` and keep source available if you redistribute binaries.
+Upstream Proxmark3 is GPL-3.0; this FAP is GPL-3.0 — see `LICENSE` and `NOTICE`.
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md). Issues are enabled on this fork.
 
 ## Upstream
 
