@@ -5,14 +5,14 @@ App(
     name="Proxmark5",  # Displayed in menus
     apptype=FlipperAppType.EXTERNAL,
     entry_point="fmps_cxt_app", # FlipperZero Master/ Proxmark5 Slave, TypeC Extend Transport.
-    stack_size=2 * 1024,
+    stack_size=8 * 1024,
     fap_category="rfid",
     # Optional values
-    fap_version="0.1",
+    fap_version="0.33",
     fap_icon="images/fmps_cxt.png",  # 10x10 1-bit PNG
     fap_description="Operate your PM5 on F0",
-    fap_author="DXL",
-    fap_weburl="https://github.com/RfidResearchGroup/Proxmark5_FlipperZero_FAP",
+    fap_author="DXL / limerx",
+    fap_weburl="https://github.com/limerx/Proxmark5_FlipperZero_FAP",
     fap_icon_assets="images",  # Image assets to compile for this application
     # list of additional libraries distributed as sources alongside the app
     fap_private_libs=[

@@ -1,0 +1,19 @@
+NOTICE — Proxmark5 Flipper Zero FAP (limerx fork)
+=================================================
+
+This repository is a fork of:
+
+  https://github.com/RfidResearchGroup/Proxmark5_FlipperZero_FAP
+
+Original FAP author credited in application.fam: DXL.
+
+Proxmark5 / related firmware work originates with DXL (xianglin1998) and the
+RfidResearchGroup / Proxmark3 community (including Iceman and many contributors).
+
+Modifications in this fork (Autopwn wizard, CEP-oriented UX/driver changes,
+documentation) are contributed by limerx.
+
+License: treat as GPL-3.0-compatible with the Proxmark3 project. See
+https://github.com/RfidResearchGroup/proxmark3 for the broader project license
+(LICENSE.txt / GPL-3.0). Redistributors must preserve attribution and source
+availability requirements of the GPL.

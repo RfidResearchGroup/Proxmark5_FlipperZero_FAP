@@ -1,5 +1,6 @@
 #include <furi_hal.h>
 #include <inttypes.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "proxmark5_com.h"
@@ -93,23 +94,12 @@ static bool proxmark5_frame_handle_ng_packet(uint8_t* packet, size_t packet_len)
         return false;
     }
 
-    // Log the data packet
-    char* hex_array = (char*)malloc(2 * packet_len);
-    if(hex_array) {
-        for(size_t i = 0; i < packet_len; i++) {
-            snprintf(hex_array + (i * 2), 2 * packet_len, "%02X", packet[i]);
-        }
-        FURI_LOG_I(PROXMARK5_LOG_TAG, "Packet (hex): %s", hex_array);
-        free(hex_array);
-    }
-
-    // Log the packet info
-    FURI_LOG_I(
+    // Log packet summary only — full hex dumps freeze the GUI (ViewPort lockup)
+    FURI_LOG_D(
         PROXMARK5_LOG_TAG,
-        "Received NG packet: cmd=0x%04X status=%d reason=%d ng=%d payload_length=%u",
+        "NG cmd=0x%04X status=%d ng=%d len=%u",
         cmd,
         status,
-        reason,
         ng,
         payload_length);
 
@@ -330,27 +320,38 @@ bool WaitForResponseTimeout(uint16_t cmd, PacketResponseNG* packet, uint32_t tim
 }
 
 static void proxmark5_frame_send_ng_internal(uint16_t cmd, uint8_t* data, size_t len, bool ng) {
-    PacketCommandNGRaw tx;
-    memset(&tx, 0, sizeof(tx));
-
+    // Pack on the wire without bitfields (Flipper/AT32 disagree on bool:1).
+    // [magic u32le][len:15|ng:1 u16le][cmd u16le][payload][post u16le]
     if(len > PM3_CMD_DATA_SIZE) {
         len = PM3_CMD_DATA_SIZE;
     }
 
-    tx.pre.magic = COMMANDNG_PREAMBLE_MAGIC;
-    tx.pre.ng = ng;
-    tx.pre.length = (uint16_t)len;
-    tx.pre.cmd = cmd;
-    if(len != 0U && data != NULL) {
-        memcpy(tx.data, data, len);
+    size_t total = 4 + 2 + 2 + len + 2;
+    uint8_t* raw = malloc(total);
+    if(!raw) {
+        return;
     }
 
-    PacketCommandNGPostamble* tx_post =
-        (PacketCommandNGPostamble*)((uint8_t*)&tx.pre + sizeof(PacketCommandNGPreamble) + len);
-    tx_post->crc = COMMANDNG_POSTAMBLE_MAGIC;
+    raw[0] = 0x50;
+    raw[1] = 0x4d;
+    raw[2] = 0x33;
+    raw[3] = 0x61;
+    uint16_t len_ng = (uint16_t)(len & 0x7FFFU);
+    if(ng) {
+        len_ng |= 0x8000U;
+    }
+    raw[4] = (uint8_t)(len_ng & 0xFFU);
+    raw[5] = (uint8_t)((len_ng >> 8) & 0xFFU);
+    raw[6] = (uint8_t)(cmd & 0xFFU);
+    raw[7] = (uint8_t)((cmd >> 8) & 0xFFU);
+    if(len != 0U && data != NULL) {
+        memcpy(raw + 8, data, len);
+    }
+    raw[8 + len] = (uint8_t)(COMMANDNG_POSTAMBLE_MAGIC & 0xFFU);
+    raw[9 + len] = (uint8_t)((COMMANDNG_POSTAMBLE_MAGIC >> 8) & 0xFFU);
 
-    (void)proxmark5_com_send_spi(
-        (uint8_t*)&tx, sizeof(PacketCommandNGPreamble) + len + sizeof(PacketCommandNGPostamble));
+    (void)proxmark5_com_send_spi(raw, total);
+    free(raw);
 }
 
 void SendCommandOLD(

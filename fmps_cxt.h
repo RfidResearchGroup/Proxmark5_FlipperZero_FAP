@@ -4,34 +4,59 @@
 #include <gui/gui.h>
 #include <gui/view_dispatcher.h>
 #include <gui/scene_manager.h>
+#include <gui/modules/text_input.h>
 
-// Pages
 #include "pages/main_page.h"
 #include "pages/operate_page.h"
-#include "pages/read_hitag2_page.h"
+#include "pages/simple_cmd_page.h"
+#include "pages/classic_dump_page.h"
+
+#define NFC_NAME_SIZE 48
 
 typedef enum {
-    // The main page of the app, showing the connection status and some basic info
     MainPageViewId,
-    // The operate page, showing operation submenu
-    OperatePageViewId,
-    // Read Hitag2 operation page
-    ReadHitag2PageViewId,
+    OperateRootViewId,
+    OperateToolsViewId,
+    OperateHfViewId,
+    SimpleCmdPageViewId,
+    ClassicDumpPageViewId,
+    NfcNameInputViewId,
 } Proxmark5ViewId;
 
 typedef enum {
     Proxmark5CustomEventOpenOperatePage,
-    Proxmark5CustomEventOpenReadHitag2Page,
+    Proxmark5CustomEventOpenToolsMenu,
+    Proxmark5CustomEventOpenHfMenu,
+    Proxmark5CustomEventOpenSimpleCmdPage,
+    Proxmark5CustomEventOpenClassicDumpPage,
+    Proxmark5CustomEventOpenNfcNameInput,
 } Proxmark5CustomEvent;
+
+typedef enum {
+    NfcSaveModeIso14443a = 0,
+    NfcSaveModeClassicDump,
+} NfcSaveMode;
+
+/** Where Back returns from a simple/autopwn leaf. */
+typedef enum {
+    LeafBackToTools = 0,
+    LeafBackToHf,
+} LeafBackTarget;
 
 typedef struct {
     Gui* gui;
     ViewDispatcher* view_dispatcher;
 
-    // Pages
     MainPage* main_page;
     OperatePage* operate_page;
-    ReadHitag2Page* read_hitag2_page;
+    SimpleCmdPage* simple_cmd_page;
+    ClassicDumpPage* classic_dump_page;
+    SimpleCmdKind pending_simple_cmd;
+    LeafBackTarget leaf_back;
+
+    TextInput* text_input;
+    char nfc_name[NFC_NAME_SIZE];
+    NfcSaveMode nfc_save_mode;
 } Proxmark5App;
 
 #endif // FMPS_CXT_H

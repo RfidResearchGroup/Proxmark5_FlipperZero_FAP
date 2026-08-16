@@ -1,4 +1,5 @@
 #include <furi_hal.h>
+#include <string.h>
 #include "proxmark5_com.h"
 #include "proxmark5_frame.h"
 #include "proxmark5_uart.h"
@@ -9,7 +10,8 @@
 #define PROXMARK5_UART_HANDSHAKE_MSG "iamf0rupm5"
 #define PROXMARK5_LOG_TAG            "Proxmark5_COM"
 
-#define BUFFER_SIZE 600 // Proxmark5 data packet max size is 512bytes.
+// OLD reply = 544B + len prefix; NG MIX with chk payload can be ~526B.
+#define BUFFER_SIZE 600
 #define PM3_SUCCESS 0
 #define PM3_EIO     -8
 
@@ -18,6 +20,8 @@ typedef struct {
     volatile bool handshake_waiting;
     volatile bool handshake_matched;
     uint8_t handshake_state;
+    // Only clock SPI while a reply is expected (idle polling desyncs PM5 slave)
+    volatile uint32_t rx_deadline_tick;
 
     // Thread for handling SPI communication
     FuriThread* thread_rx_spi;
@@ -30,10 +34,6 @@ typedef struct {
 // Global context for proxmark5 communication, it will be initialized in proxmark5_com_init
 //  and deinitialized in proxmark5_com_deinit
 static Proxmark5ComContext* com_context = NULL;
-
-static uint16_t pm5_u16_le(const uint8_t* data) {
-    return (uint16_t)data[0] | ((uint16_t)data[1] << 8);
-}
 
 // Returns true when "yes" handshake response has been fully matched.
 static bool proxmark5_com_update_handshake_match(const uint8_t* data, size_t len) {
@@ -63,6 +63,33 @@ static bool proxmark5_com_update_handshake_match(const uint8_t* data, size_t len
     return false;
 }
 
+static bool proxmark5_com_handle_response_blob(uint8_t* blob, size_t blob_len) {
+    if(!blob || blob_len < 12) {
+        return false;
+    }
+
+    for(size_t i = 0; i + 12 <= blob_len; i++) {
+        if(blob[i] != 0x50 || blob[i + 1] != 0x4d ||
+           blob[i + 2] != 0x33 || blob[i + 3] != 0x62) {
+            continue;
+        }
+
+        uint16_t payload_len =
+            ((uint16_t)blob[i + 4] | ((uint16_t)blob[i + 5] << 8)) & 0x7FFFU;
+        size_t frame_len = 12U + payload_len;
+        if(i + frame_len > blob_len) {
+            return false;
+        }
+        return proxmark5_frame_handle_packet(blob + i, frame_len);
+    }
+
+    uint16_t prefixed_len = (uint16_t)blob[0] | ((uint16_t)blob[1] << 8);
+    if(prefixed_len >= 12 && (size_t)(prefixed_len + 2) <= blob_len) {
+        return proxmark5_frame_handle_packet(blob + 2, prefixed_len);
+    }
+    return false;
+}
+
 // proxmark5 communication control initialization, sets up the GPIO pin for CC control
 static void proxmark5_cc_ctrl_init(void) {
     furi_hal_gpio_init_simple(PROXMARK5_GPIO_CC, GpioModeOutputPushPull);
@@ -77,40 +104,45 @@ static void proxmark5_cc_ctrl_deinit(void) {
 // Receive data from proxmark5 over SPI and cache parsed response frames.
 static int32_t proxmark5_com_spi_task(void* context) {
     UNUSED(context);
-    uint8_t spi_len_header[2];
 
     while(com_context->thread_running) {
-        // Reset length header before spi receive to avoid processing stale length in case of timeout
-        spi_len_header[0] = 0;
-        spi_len_header[1] = 0;
-        if(!proxmark5_spi_receive_data(spi_len_header, sizeof(spi_len_header), 100)) {
-            furi_delay_ms(100);
+        bool expect_rx = com_context->handshake_waiting ||
+                         (furi_get_tick() < com_context->rx_deadline_tick);
+        if(!expect_rx) {
+            furi_delay_ms(20);
             continue;
         }
 
-        uint16_t data_length = pm5_u16_le(spi_len_header);
-        if(data_length == 0 || data_length > BUFFER_SIZE) {
-            if(data_length > 0) {
-                FURI_LOG_W(PROXMARK5_LOG_TAG, "Invalid SPI packet length: %u", data_length);
+        // Handshake: short clock is enough for {0x04,0x00,'y','e','s',0x00}
+        if(com_context->handshake_waiting) {
+            uint16_t data_length = 0;
+            if(!proxmark5_spi_receive_packet(
+                   com_context->packet, BUFFER_SIZE, &data_length, 80)) {
+                furi_delay_ms(15);
+                continue;
             }
-            furi_delay_ms(100);
+            (void)proxmark5_com_update_handshake_match(com_context->packet, data_length);
             continue;
         }
 
-        FURI_LOG_I(PROXMARK5_LOG_TAG, "Data length to receive: %u", data_length);
-
-        if(!proxmark5_spi_receive_data(com_context->packet, data_length, 2000)) {
-            FURI_LOG_W(PROXMARK5_LOG_TAG, "SPI receive timeout, packet dropped");
-            furi_delay_ms(100);
+        // Command reply: one CS, one burst. Parsing a 2-byte length then
+        // releasing CS on 0x0000 ate the PM5 TX FIFO (logs: incomplete 3/266).
+        const size_t blob_len = BUFFER_SIZE;
+        if(!proxmark5_spi_receive_data(com_context->packet, blob_len, 200)) {
+            furi_delay_ms(20);
             continue;
         }
 
-        if(proxmark5_com_update_handshake_match(com_context->packet, data_length)) {
+        if(proxmark5_com_update_handshake_match(com_context->packet, blob_len)) {
+            com_context->rx_deadline_tick = 0;
             continue;
         }
 
-        if(!proxmark5_frame_handle_packet(com_context->packet, data_length)) {
-            FURI_LOG_W(PROXMARK5_LOG_TAG, "Invalid SPI response frame, dropped");
+        bool handled = proxmark5_com_handle_response_blob(com_context->packet, blob_len);
+        if(handled) {
+            com_context->rx_deadline_tick = 0;
+        } else {
+            furi_delay_ms(20);
         }
     }
 
@@ -120,7 +152,7 @@ static int32_t proxmark5_com_spi_task(void* context) {
 // Start the proxmark5 communication thread for handling SPI reception
 static void proxmark5_com_rx_spi_thread_start(void) {
     com_context->thread_rx_spi =
-        furi_thread_alloc_ex("PM5_SPI_RX", 2048, proxmark5_com_spi_task, NULL);
+        furi_thread_alloc_ex("PM5_SPI_RX", 4096, proxmark5_com_spi_task, NULL);
     furi_check(com_context->thread_rx_spi != NULL);
     com_context->thread_running = true;
     furi_thread_start(com_context->thread_rx_spi);
@@ -152,6 +184,7 @@ void proxmark5_com_init(void) {
     com_context->handshake_waiting = false;
     com_context->handshake_matched = false;
     com_context->handshake_state = 0;
+    com_context->rx_deadline_tick = 0;
 
     proxmark5_frame_init();
 
@@ -256,19 +289,54 @@ bool proxmark5_com_send_spi(uint8_t* data, size_t length) {
         return false;
     }
 
-    // Send length header first, proxmark5 expects 2 bytes of length header before the actual data
-    if(!proxmark5_spi_send_data((uint8_t*)&length, 2, 1000)) {
-        FURI_LOG_W(PROXMARK5_LOG_TAG, "SPI send failed at length header");
+    // One contiguous SPI transaction: [len_lo][len_hi][payload...][0x00]
+    // Fragmented TX caused PM5 to read the length before the payload arrived → timeouts.
+    size_t frame_len = 2 + length + 1;
+    uint8_t* frame = malloc(frame_len);
+    if(!frame) {
+        return false;
+    }
+    frame[0] = (uint8_t)(length & 0xFF);
+    frame[1] = (uint8_t)((length >> 8) & 0xFF);
+    memcpy(frame + 2, data, length);
+    frame[2 + length] = 0x00;
+
+    const size_t blob_len = BUFFER_SIZE;
+    uint8_t* response_blob = malloc(blob_len);
+    if(!response_blob) {
+        free(frame);
         return false;
     }
 
-    // Send the actual data after the length header
-    if(!proxmark5_spi_send_data(data, length, 1000)) {
-        FURI_LOG_W(PROXMARK5_LOG_TAG, "SPI send failed");
+    // Stop fallback RX before using the SPI bus. Keep the synchronous response
+    // in a private buffer so the RX thread cannot overwrite it while parsing.
+    com_context->rx_deadline_tick = 0;
+    bool ok = proxmark5_spi_send_then_receive(
+        frame, frame_len, response_blob, blob_len, 2000);
+    free(frame);
+    if(!ok) {
+        free(response_blob);
+        FURI_LOG_W(PROXMARK5_LOG_TAG, "SPI send/recv failed (%u bytes)", (unsigned)frame_len);
+        // Still listen briefly — long commands reply later via RX thread.
+        com_context->rx_deadline_tick = furi_get_tick() + 2000;
         return false;
     }
 
-    // DXL: The last byte must be 0x00 to keep the proxmark5 no data rx.
-    uint8_t end_byte = 0x00;
-    return proxmark5_spi_send_data(&end_byte, 1, 1000);
+    bool handled = proxmark5_com_handle_response_blob(response_blob, blob_len);
+    free(response_blob);
+    if(!handled) {
+        // No immediate reply (normal for chkkeys_fast). RX thread continues.
+        com_context->rx_deadline_tick = furi_get_tick() + 2000;
+    }
+    return true;
+}
+
+void proxmark5_com_expect_rx(uint32_t timeout_ms) {
+    if(com_context == NULL) {
+        return;
+    }
+    uint32_t until = furi_get_tick() + timeout_ms;
+    if(until > com_context->rx_deadline_tick) {
+        com_context->rx_deadline_tick = until;
+    }
 }
