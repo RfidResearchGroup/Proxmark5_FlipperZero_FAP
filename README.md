@@ -35,6 +35,32 @@ Flash **only** the Proxmark5 device (`PLATFORM=PM5`). Never flash PM5 firmware o
 - Hitag2 demo pages removed from the default build (unstable upstream demo)
 - Version bump in `application.fam` (see `fap_version`)
 
+## Screenshots
+
+Hardware + UI captures live under [`docs/screenshots/`](docs/screenshots/) (folders follow the in-app menu).
+
+### Setup
+
+![Flipper + Proxmark5 CEP](docs/screenshots/00-hardware/flipper-pm5-cep.jpg)
+
+### Menu
+
+| Root | PM5 Tools | HF RFID |
+|------|-----------|---------|
+| ![Root](docs/screenshots/01-proxmark5/root-menu.png) | ![Tools](docs/screenshots/02-pm5-tools/menu/pm5-tools.png) | ![14a](docs/screenshots/03-hf-rfid/14a-reader/classic-1k.png) |
+
+### PM5 Tools
+
+| Ping | HW Version |
+|------|------------|
+| ![Ping](docs/screenshots/02-pm5-tools/ping/ping-ok.png) | ![HW](docs/screenshots/02-pm5-tools/hw-version/hw-version.png) |
+
+### MFC Autopwn wizard
+
+| Start | Dict | Choice | Nonces | Dump | MFKey |
+|-------|------|--------|--------|------|-------|
+| ![Wizard](docs/screenshots/03-hf-rfid/mfc-autopwn/01-wizard/start.png) | ![Dict](docs/screenshots/03-hf-rfid/mfc-autopwn/02-dict/dict-running.png) | ![Next](docs/screenshots/03-hf-rfid/mfc-autopwn/03-after-dict/dict-done-choice.png) | ![Nonces](docs/screenshots/03-hf-rfid/mfc-autopwn/04-nonces/nonces-ok.png) | ![OK](docs/screenshots/03-hf-rfid/mfc-autopwn/05-dump/autopwn-ok.png) | ![MFKey](docs/screenshots/03-hf-rfid/mfc-autopwn/06-mfkey/mfkey-ready.png) |
+
 ## Build & install
 
 ```bash
