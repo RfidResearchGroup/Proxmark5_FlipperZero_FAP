@@ -22,8 +22,9 @@ Please keep upstream copyright notices and do not remove author credits from `ap
 
 CEP handshake + SPI NG transport live in:
 
-- Firmware fork: https://github.com/limerx/proxmark3  
-- Branch: `pm5-f0-cep` (based on `xianglin1998/proxmark3` branch `proxmark5`)
+- Firmware fork / branch: https://github.com/limerx/proxmark3/tree/pm5-f0-cep  
+  (based on [`xianglin1998/proxmark3` `proxmark5`](https://github.com/xianglin1998/proxmark3/tree/proxmark5))
+- Notes: [`docs/F0_CEP_FLIPPER.md`](https://github.com/limerx/proxmark3/blob/pm5-f0-cep/docs/F0_CEP_FLIPPER.md)
 
 Flash **only** the Proxmark5 device (`PLATFORM=PM5`). Never flash PM5 firmware onto a Flipper (check USB `ID_MODEL`).
 
@@ -31,7 +32,7 @@ Flash **only** the Proxmark5 device (`PLATFORM=PM5`). Never flash PM5 firmware o
 
 - Autopwn-style flow for MIFARE Classic: dict → optional nonces → dump / MFKey handoff
 - Dicts from `/ext/apps_data/fmps_cxt/dicts/` (small `*.dic` only; skips oversized / private-prefixed files)
-- Nonce collection path writing Flipper NFC `.nested.log` for [MFKey](https://github.com/noproto/MFKey)
+- Nonce collection path writing Flipper NFC `.nested.log` for [MFKey](https://github.com/noproto/FlipperMfkey) (`/ext/apps/NFC/mfkey.fap`)
 - Hitag2 demo pages removed from the default build (unstable upstream demo)
 - Version bump in `application.fam` (see `fap_version`)
 
@@ -41,7 +42,7 @@ Hardware + UI captures live under [`docs/screenshots/`](docs/screenshots/) (fold
 
 ### Setup
 
-Add a Flipper Zero + Proxmark5 Type-C photo in `docs/screenshots/00-hardware/flipper-pm5-cep.jpg` (not committed yet).
+Photo Flipper + Proxmark5 Type-C : à ajouter dans [`docs/screenshots/00-hardware/`](docs/screenshots/00-hardware/) (dossier prêt, image pas encore fournie).
 
 ### Menu
 
