@@ -20,7 +20,7 @@ Proxmark5
 
 | Path | Screen |
 |------|--------|
-| `00-hardware/` | Flipper Zero + Proxmark5 over Type-C CEP |
+| `00-hardware/` | *(add)* Flipper Zero + Proxmark5 over Type-C CEP |
 | `01-proxmark5/` | Root menu |
 | `02-pm5-tools/menu/` | PM5 Tools submenu |
 | `02-pm5-tools/ping/` | Ping OK / SPI link alive |

@@ -41,7 +41,7 @@ Hardware + UI captures live under [`docs/screenshots/`](docs/screenshots/) (fold
 
 ### Setup
 
-![Flipper + Proxmark5 CEP](docs/screenshots/00-hardware/flipper-pm5-cep.jpg)
+Add a Flipper Zero + Proxmark5 Type-C photo in `docs/screenshots/00-hardware/flipper-pm5-cep.jpg` (not committed yet).
 
 ### Menu
 
