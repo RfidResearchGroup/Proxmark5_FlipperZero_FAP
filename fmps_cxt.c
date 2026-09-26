@@ -3,6 +3,7 @@
 #include <fmps_cxt_icons.h>
 #include "fmps_cxt.h"
 #include "proxmark5_com.h"
+#include "pages/status_page_tests.h"
 
 // For GUI:
 //  https://github.com/jamisonderek/flipper-zero-tutorials/wiki/User-Interface#viewdisptacher
@@ -26,6 +27,28 @@ static void fmps_cxt_open_read_hitag2_page(void* context) {
         app->view_dispatcher, Proxmark5CustomEventOpenReadHitag2Page);
 }
 
+static void fmps_cxt_open_capabilities_page(void* context) {
+    Proxmark5App* app = context;
+    view_dispatcher_send_custom_event(
+        app->view_dispatcher, Proxmark5CustomEventOpenCapabilitiesPage);
+}
+
+static void fmps_cxt_open_ping_page(void* context) {
+    Proxmark5App* app = context;
+    view_dispatcher_send_custom_event(app->view_dispatcher, Proxmark5CustomEventOpenPingPage);
+}
+
+static void fmps_cxt_open_flash_chip_page(void* context) {
+    Proxmark5App* app = context;
+    view_dispatcher_send_custom_event(
+        app->view_dispatcher, Proxmark5CustomEventOpenFlashChipPage);
+}
+
+static void fmps_cxt_open_battery_page(void* context) {
+    Proxmark5App* app = context;
+    view_dispatcher_send_custom_event(app->view_dispatcher, Proxmark5CustomEventOpenBatteryPage);
+}
+
 static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
     Proxmark5App* app = context;
 
@@ -36,6 +59,22 @@ static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
     case Proxmark5CustomEventOpenReadHitag2Page:
         view_dispatcher_switch_to_view(app->view_dispatcher, ReadHitag2PageViewId);
         read_hitag2_page_start(app->read_hitag2_page);
+        return true;
+    case Proxmark5CustomEventOpenCapabilitiesPage:
+        view_dispatcher_switch_to_view(app->view_dispatcher, StatusPageViewId);
+        status_page_start(app->status_page, "Capabilities", status_test_capabilities_fetch);
+        return true;
+    case Proxmark5CustomEventOpenPingPage:
+        view_dispatcher_switch_to_view(app->view_dispatcher, StatusPageViewId);
+        status_page_start(app->status_page, "Ping Test", status_test_ping_fetch);
+        return true;
+    case Proxmark5CustomEventOpenFlashChipPage:
+        view_dispatcher_switch_to_view(app->view_dispatcher, StatusPageViewId);
+        status_page_start(app->status_page, "Flash/Chip ID", status_test_flash_chip_fetch);
+        return true;
+    case Proxmark5CustomEventOpenBatteryPage:
+        view_dispatcher_switch_to_view(app->view_dispatcher, StatusPageViewId);
+        status_page_start(app->status_page, "Battery", status_test_battery_fetch);
         return true;
     default:
         return false;
@@ -54,6 +93,12 @@ static uint32_t read_hitag2_page_previous_callback(void* context) {
     return OperatePageViewId;
 }
 
+static uint32_t status_page_previous_callback(void* context) {
+    StatusPage* status_page = context;
+    status_page_stop(status_page);
+    return OperatePageViewId;
+}
+
 Proxmark5App* proxmark5_app_alloc() {
     Proxmark5App* app = calloc(1, sizeof(Proxmark5App));
     app->gui = furi_record_open(RECORD_GUI);
@@ -68,7 +113,17 @@ Proxmark5App* proxmark5_app_alloc() {
     view_dispatcher_add_view(app->view_dispatcher, MainPageViewId, app->main_page->canvas_view);
 
     // Create and add the operate submenu page to the view dispatcher
-    app->operate_page = operate_page_create(fmps_cxt_open_read_hitag2_page, app);
+    app->operate_page = operate_page_create(
+        fmps_cxt_open_read_hitag2_page,
+        app,
+        fmps_cxt_open_capabilities_page,
+        app,
+        fmps_cxt_open_ping_page,
+        app,
+        fmps_cxt_open_flash_chip_page,
+        app,
+        fmps_cxt_open_battery_page,
+        app);
     view_set_previous_callback(
         submenu_get_view(app->operate_page->submenu), operate_page_previous_callback);
     view_dispatcher_add_view(
@@ -85,6 +140,15 @@ Proxmark5App* proxmark5_app_alloc() {
         ReadHitag2PageViewId,
         read_hitag2_page_get_view(app->read_hitag2_page));
 
+    // Create and add the shared status/self-test page to the view dispatcher.
+    // Reused across Capabilities/Ping/Flash-Chip-ID/Battery - see
+    // fmps_cxt_custom_event_callback for which fetch function each one runs.
+    app->status_page = status_page_create(fmps_cxt_open_operate_page, app);
+    view_set_previous_callback(
+        status_page_get_view(app->status_page), status_page_previous_callback);
+    view_dispatcher_add_view(
+        app->view_dispatcher, StatusPageViewId, status_page_get_view(app->status_page));
+
     // Set the back event callback to handle the back button press, and pass the app context to it
     view_dispatcher_set_event_callback_context(app->view_dispatcher, app);
     view_dispatcher_set_navigation_event_callback(
@@ -100,6 +164,7 @@ void proxmark5_app_free(Proxmark5App* app) {
     view_dispatcher_remove_view(app->view_dispatcher, MainPageViewId);
     view_dispatcher_remove_view(app->view_dispatcher, OperatePageViewId);
     view_dispatcher_remove_view(app->view_dispatcher, ReadHitag2PageViewId);
+    view_dispatcher_remove_view(app->view_dispatcher, StatusPageViewId);
     if(app->main_page) {
         main_page_free(app->main_page);
         app->main_page = NULL;
@@ -111,6 +176,10 @@ void proxmark5_app_free(Proxmark5App* app) {
     if(app->read_hitag2_page) {
         read_hitag2_page_free(app->read_hitag2_page);
         app->read_hitag2_page = NULL;
+    }
+    if(app->status_page) {
+        status_page_free(app->status_page);
+        app->status_page = NULL;
     }
     view_dispatcher_free(app->view_dispatcher);
     furi_record_close(RECORD_GUI);
