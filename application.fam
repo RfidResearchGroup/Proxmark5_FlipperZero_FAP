@@ -5,7 +5,7 @@ App(
     name="Proxmark5",  # Displayed in menus
     apptype=FlipperAppType.EXTERNAL,
     entry_point="fmps_cxt_app", # FlipperZero Master/ Proxmark5 Slave, TypeC Extend Transport.
-    stack_size=2 * 1024,
+    stack_size=4 * 1024,
     fap_category="rfid",
     # Optional values
     fap_version="0.1",
