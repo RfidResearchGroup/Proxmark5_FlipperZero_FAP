@@ -1124,9 +1124,9 @@ typedef struct {
     uint8_t  pages64k;
 } PACKED spi_flash_t;
 
-// PM5, read compact BWM battery telemetry - see armsrc/bwm_charger.h in the
+// PM5, read compact BWM battery telemetry - see include/pm3_cmd.h in the
 // proxmark3-RRG repo for the authoritative definition.
-#define CMD_PM5_BWM_GET_BATTERY 0x0180
+#define CMD_PM5_BWM_GET_BATTERY 0x0184
 
 typedef struct {
     bool bwm_present;
