@@ -18,7 +18,7 @@ typedef enum {
     OperatePageViewId,
     // Read Hitag2 operation page
     ReadHitag2PageViewId,
-    // Shared hardware self-test page (Capabilities/Ping/Flash-Chip-ID/Battery)
+    // Shared hardware self-test page (Capabilities/Ping/Flash-Chip-ID/Battery/CEP Status)
     StatusPageViewId,
 } Proxmark5ViewId;
 
@@ -30,6 +30,7 @@ typedef enum {
     Proxmark5CustomEventOpenPingPage,
     Proxmark5CustomEventOpenFlashChipPage,
     Proxmark5CustomEventOpenBatteryPage,
+    Proxmark5CustomEventOpenCepStatusPage,
 } Proxmark5CustomEvent;
 
 typedef struct {

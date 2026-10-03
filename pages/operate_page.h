@@ -23,6 +23,8 @@ typedef struct {
     void* open_flash_chip_callback_context;
     OperatePageOpenStatusTestCallback open_battery_callback;
     void* open_battery_callback_context;
+    OperatePageOpenStatusTestCallback open_cep_status_callback;
+    void* open_cep_status_callback_context;
 } OperatePage;
 
 OperatePage* operate_page_create(
@@ -35,7 +37,9 @@ OperatePage* operate_page_create(
     OperatePageOpenStatusTestCallback open_flash_chip_callback,
     void* open_flash_chip_callback_context,
     OperatePageOpenStatusTestCallback open_battery_callback,
-    void* open_battery_callback_context);
+    void* open_battery_callback_context,
+    OperatePageOpenStatusTestCallback open_cep_status_callback,
+    void* open_cep_status_callback_context);
 void operate_page_free(OperatePage* operate_page);
 
 #endif // OPERATE_PAGE_H

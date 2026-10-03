@@ -253,3 +253,45 @@ int status_test_battery_fetch(
     *out_line_count = n;
     return PM3_SUCCESS;
 }
+
+int status_test_cep_fetch(
+    volatile bool* cancel_requested,
+    char lines[STATUS_PAGE_MAX_LINES][STATUS_PAGE_LINE_LEN],
+    int* out_line_count) {
+    *out_line_count = 0;
+
+    clearCommandBuffer();
+    if(cancel_requested && *cancel_requested) {
+        return PM3_EOPABORTED;
+    }
+    SendCommandNG(CMD_CEP_STATUS, NULL, 0);
+
+    PacketResponseNG resp;
+    int wait_result = status_test_wait(CMD_CEP_STATUS, &resp, 1000, cancel_requested);
+    if(wait_result != PM3_SUCCESS) {
+        // Most likely an older PM5 build without this command at all.
+        snprintf(lines[0], STATUS_PAGE_LINE_LEN, "N/A (no reply)");
+        *out_line_count = 1;
+        return wait_result;
+    }
+
+    if(resp.status != PM3_SUCCESS || resp.length < sizeof(cep_status_t)) {
+        snprintf(lines[0], STATUS_PAGE_LINE_LEN, "N/A (bad reply)");
+        *out_line_count = 1;
+        return PM3_ESOFT;
+    }
+
+    cep_status_t st;
+    memcpy(&st, resp.data.asBytes, sizeof(st));
+
+    int n = 0;
+    snprintf(lines[n++], STATUS_PAGE_LINE_LEN, "CEP active: %s", st.cep_active ? "Y" : "N");
+    if(st.battery.bwm_present && st.battery.gauge_ok) {
+        snprintf(lines[n++], STATUS_PAGE_LINE_LEN, "Batt: %u%%", st.battery.soc_pct);
+    } else {
+        snprintf(lines[n++], STATUS_PAGE_LINE_LEN, "Batt: N/A");
+    }
+    snprintf(lines[n++], STATUS_PAGE_LINE_LEN, "FW:%s", st.fw_version);
+    *out_line_count = n;
+    return PM3_SUCCESS;
+}

@@ -1143,4 +1143,13 @@ typedef struct {
     uint8_t  health_pct;
 } PACKED bwm_battery_info_t;
 
+// PM5, live hardware-status snapshot - see armsrc/appmain.c's CMD_CEP_STATUS
+// case in proxmark3-RRG for the authoritative definition.
+#define CMD_CEP_STATUS 0x0185
+typedef struct {
+    uint8_t  cep_active;
+    bwm_battery_info_t battery;
+    char     fw_version[24];
+} PACKED cep_status_t;
+
 #endif

@@ -7,6 +7,7 @@ typedef enum {
     OperateSubmenuIndexPing,
     OperateSubmenuIndexFlashChipId,
     OperateSubmenuIndexBattery,
+    OperateSubmenuIndexCepStatus,
 } OperateSubmenuIndex;
 
 static void operate_page_submenu_callback(void* context, uint32_t index) {
@@ -44,6 +45,12 @@ static void operate_page_submenu_callback(void* context, uint32_t index) {
             operate_page->open_battery_callback(operate_page->open_battery_callback_context);
         }
         break;
+    case OperateSubmenuIndexCepStatus:
+        if(operate_page->open_cep_status_callback) {
+            operate_page->open_cep_status_callback(
+                operate_page->open_cep_status_callback_context);
+        }
+        break;
     default:
         break;
     }
@@ -59,7 +66,9 @@ OperatePage* operate_page_create(
     OperatePageOpenStatusTestCallback open_flash_chip_callback,
     void* open_flash_chip_callback_context,
     OperatePageOpenStatusTestCallback open_battery_callback,
-    void* open_battery_callback_context) {
+    void* open_battery_callback_context,
+    OperatePageOpenStatusTestCallback open_cep_status_callback,
+    void* open_cep_status_callback_context) {
     OperatePage* operate_page = calloc(1, sizeof(OperatePage));
     if(!operate_page) {
         return NULL;
@@ -75,6 +84,8 @@ OperatePage* operate_page_create(
     operate_page->open_flash_chip_callback_context = open_flash_chip_callback_context;
     operate_page->open_battery_callback = open_battery_callback;
     operate_page->open_battery_callback_context = open_battery_callback_context;
+    operate_page->open_cep_status_callback = open_cep_status_callback;
+    operate_page->open_cep_status_callback_context = open_cep_status_callback_context;
 
     operate_page->submenu = submenu_alloc();
     submenu_set_header(operate_page->submenu, "Functions Menu");
@@ -106,6 +117,12 @@ OperatePage* operate_page_create(
         operate_page->submenu,
         "Battery",
         OperateSubmenuIndexBattery,
+        operate_page_submenu_callback,
+        operate_page);
+    submenu_add_item(
+        operate_page->submenu,
+        "Hardware Status",
+        OperateSubmenuIndexCepStatus,
         operate_page_submenu_callback,
         operate_page);
 

@@ -49,6 +49,12 @@ static void fmps_cxt_open_battery_page(void* context) {
     view_dispatcher_send_custom_event(app->view_dispatcher, Proxmark5CustomEventOpenBatteryPage);
 }
 
+static void fmps_cxt_open_cep_status_page(void* context) {
+    Proxmark5App* app = context;
+    view_dispatcher_send_custom_event(
+        app->view_dispatcher, Proxmark5CustomEventOpenCepStatusPage);
+}
+
 static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
     Proxmark5App* app = context;
 
@@ -75,6 +81,10 @@ static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
     case Proxmark5CustomEventOpenBatteryPage:
         view_dispatcher_switch_to_view(app->view_dispatcher, StatusPageViewId);
         status_page_start(app->status_page, "Battery", status_test_battery_fetch);
+        return true;
+    case Proxmark5CustomEventOpenCepStatusPage:
+        view_dispatcher_switch_to_view(app->view_dispatcher, StatusPageViewId);
+        status_page_start(app->status_page, "CEP Status", status_test_cep_fetch);
         return true;
     default:
         return false;
@@ -123,6 +133,8 @@ Proxmark5App* proxmark5_app_alloc() {
         fmps_cxt_open_flash_chip_page,
         app,
         fmps_cxt_open_battery_page,
+        app,
+        fmps_cxt_open_cep_status_page,
         app);
     view_set_previous_callback(
         submenu_get_view(app->operate_page->submenu), operate_page_previous_callback);
@@ -141,7 +153,7 @@ Proxmark5App* proxmark5_app_alloc() {
         read_hitag2_page_get_view(app->read_hitag2_page));
 
     // Create and add the shared status/self-test page to the view dispatcher.
-    // Reused across Capabilities/Ping/Flash-Chip-ID/Battery - see
+    // Reused across Capabilities/Ping/Flash-Chip-ID/Battery/CEP Status - see
     // fmps_cxt_custom_event_callback for which fetch function each one runs.
     app->status_page = status_page_create(fmps_cxt_open_operate_page, app);
     view_set_previous_callback(
