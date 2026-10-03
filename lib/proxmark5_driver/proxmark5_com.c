@@ -81,28 +81,17 @@ static int32_t proxmark5_com_spi_task(void* context) {
     uint8_t spi_len_header[2];
 
     while(com_context->thread_running) {
-        // Unconditional idle gap before every poll, including the success
-        // path. Without this, this loop hammers the bus continuously -
-        // furi_hal_spi_bus_trx() with a NULL tx buffer sends real 0xFF
-        // filler bytes over MOSI on every single cycle (confirmed by
-        // reading furi_hal_spi.c), so an unthrottled loop means PM5's SPI1
-        // slave sees a near-constant stream of real CS pulses + 0xFF bytes
-        // completely unrelated to any actual command, whether or not this
-        // poll's own read this iteration succeeds or fails. That's a
-        // plausible cause of the PM5-side single-byte-then-stall reception
-        // failures seen when a real command is sent concurrently.
+        // Idle gap on every poll, success or not - otherwise this loop
+        // hammers the bus with 0xFF filler continuously.
         furi_delay_ms(20);
 
         // Reset length header before spi receive to avoid processing stale length in case of timeout
         spi_len_header[0] = 0;
         spi_len_header[1] = 0;
 
-        // One acquire/release for the whole frame (length header + payload),
-        // NOT one per piece - see proxmark5_com_send_spi()'s comment for why:
-        // the PM5's SPI1 hardware-CS slave mode starts a fresh frame on every
-        // CS assertion, so releasing between the header and payload reads
-        // (the old behaviour) made the PM5 see two unrelated transactions
-        // instead of one logical reply.
+        // One acquire/release for the whole frame (header + payload), not
+        // one per piece - PM5's HW-CS slave mode starts a fresh frame on
+        // every CS edge, so splitting desyncs the two sides.
         proxmark5_spi_acquire();
 
         if(!proxmark5_spi_trx_raw(spi_len_header, sizeof(spi_len_header), 100)) {
@@ -149,12 +138,8 @@ static void proxmark5_com_rx_spi_thread_start(void) {
     com_context->thread_rx_spi =
         furi_thread_alloc_ex("PM5_SPI_RX", 2048, proxmark5_com_spi_task, NULL);
     furi_check(com_context->thread_rx_spi != NULL);
-    // Default (Normal) priority sits above the OS's own timer thread, which
-    // is deliberately kept lowest-priority - a thread that busy-polls this
-    // continuously can starve it under load (see flipperdevices/
-    // flipperzero-firmware#3380), which the maintainers say can deadlock
-    // the whole system. This thread is background polling, not latency-
-    // critical UI work, so it doesn't need Normal priority.
+    // Low priority: background polling, not latency-critical, and avoids
+    // starving the OS timer thread under load.
     furi_thread_set_priority(com_context->thread_rx_spi, FuriThreadPriorityLow);
     com_context->thread_running = true;
     furi_thread_start(com_context->thread_rx_spi);
@@ -206,18 +191,9 @@ void proxmark5_com_deinit(void) {
     proxmark5_cc_ctrl_deinit();
     proxmark5_uart_deinit();
     proxmark5_spi_deinit();
-    // Deliberately do NOT disable OTG here. Cutting 5V on every app exit
-    // forces a full PM5 cold boot (reloading LF/HF key dictionaries etc,
-    // tens of seconds) on every single relaunch, not just a re-handshake -
-    // confirmed on hardware to take up to ~90s. Leaving OTG on keeps PM5
-    // powered across relaunches so proxmark5_com_handshake()'s own
-    // "already enabled" check short-circuits the wait and PM5 answers the
-    // handshake almost immediately. Tradeoff: PM5 stays powered (drawing
-    // Flipper battery) until OTG is turned off some other way (Flipper
-    // reboot, or a future explicit "power off PM5" action) rather than
-    // automatically on every app close - acceptable for a dev/debug tool,
-    // matching how a wired USB client staying open doesn't power-cycle PM5
-    // either.
+    // Deliberately do NOT disable OTG here - cutting 5V forces a full PM5
+    // cold boot (~90s) on every relaunch. Leaving it on keeps PM5 powered
+    // so the next handshake short-circuits the wait.
     // Free the communication context and resources
     if(com_context) {
         free(com_context);
@@ -295,33 +271,20 @@ bool proxmark5_com_handshake(void) {
  * @return true if the packet is sent successfully
  * @return false if the packet fails to send
  */
-// Sync preamble sent immediately before every frame, in the same CS-held
-// transaction. PM5's software-polled SPI1 reception checks the bus only
-// once per pass through its main loop, and a whole NG frame clocks by in
-// well under 100 microseconds at the Flipper's fixed 2MHz SPI clock - too
-// short a window for PM5 to reliably notice from an arbitrary point in its
-// own loop timing. A generous run of a known sync byte first turns that
-// into a multi-millisecond window: PM5 discards sync bytes until it sees
-// one that doesn't match, then treats that as the real frame's first byte.
-// See armsrc/pm5_cep.c's cep_spi_data_available() for the receiving half -
-// SYNC_BYTE and the discard behavior must match here.
+// Sync preamble, sent before every frame in the same CS-held transaction,
+// so PM5's polled SPI1 reception has a wide enough window to notice the
+// frame start. Must match armsrc/pm5_cep.c's cep_spi_data_available().
 #define SYNC_BYTE 0x55
-#define SYNC_LEN  500 // ~2ms at 2MHz - comfortably longer than a plausible PM5 main-loop iteration
+#define SYNC_LEN  500 // ~2ms at 2MHz
 
 bool proxmark5_com_send_spi(uint8_t* data, size_t length) {
     if(com_context == NULL || data == NULL || length == 0 || length > BUFFER_SIZE) {
         return false;
     }
 
-    // Build sync preamble + length header + payload + trailer byte all in
-    // ONE contiguous buffer and send it as a SINGLE furi_hal_spi_bus_tx()
-    // call. Two separate tx_raw() calls back-to-back under one acquire was
-    // tried first and measured (via the PM5-side debug trace) to reliably
-    // truncate after only ~3 bytes of the second call - there's a real gap
-    // between separate furi_hal_spi_bus_tx() calls even though CS itself
-    // stays asserted throughout (acquire/release only touches CS, but
-    // apparently isn't the whole story) - so, as with the original framing
-    // fix, never split the transfer at all.
+    // Build preamble + length header + payload + trailer in one buffer and
+    // send it as a single tx call - splitting the transfer desyncs PM5's
+    // HW-CS slave mode, same as the RX side.
     uint8_t frame_buf[SYNC_LEN + 2 + BUFFER_SIZE + 1];
     memset(frame_buf, SYNC_BYTE, SYNC_LEN);
     frame_buf[SYNC_LEN + 0] = (uint8_t)(length & 0xFF);

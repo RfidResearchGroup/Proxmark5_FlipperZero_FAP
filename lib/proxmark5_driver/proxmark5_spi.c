@@ -5,14 +5,8 @@
 // SPI bus handle for proxmark5 communication
 const FuriHalSpiBusHandle* spi_bus = &furi_hal_spi_bus_handle_external;
 
-// furi_hal_spi_acquire() hard-asserts (furi_check) if the bus is already
-// held rather than blocking - it's meant for a single caller per bus. We
-// have two independent threads touching this same handle (the RX poll
-// thread in proxmark5_com.c, and whichever thread calls SendCommandNG),
-// so without this mutex any overlap between them crashes the whole
-// Flipper, not just this app. The RX thread holds the bus for most of its
-// duty cycle (up to its 100ms header-read timeout every ~20ms idle loop),
-// so that overlap is common, not a rare edge case.
+// Guards the bus across the RX poll thread and command senders -
+// furi_hal_spi_acquire() asserts if already held.
 static FuriMutex* spi_lock = NULL;
 
 /**
