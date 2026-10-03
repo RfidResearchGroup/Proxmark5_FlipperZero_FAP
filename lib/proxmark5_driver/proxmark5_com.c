@@ -1,4 +1,5 @@
 #include <furi_hal.h>
+#include <string.h>
 #include "proxmark5_com.h"
 #include "proxmark5_frame.h"
 #include "proxmark5_uart.h"
@@ -80,16 +81,28 @@ static int32_t proxmark5_com_spi_task(void* context) {
     uint8_t spi_len_header[2];
 
     while(com_context->thread_running) {
+        // Idle gap on every poll, success or not - otherwise this loop
+        // hammers the bus with 0xFF filler continuously.
+        furi_delay_ms(20);
+
         // Reset length header before spi receive to avoid processing stale length in case of timeout
         spi_len_header[0] = 0;
         spi_len_header[1] = 0;
-        if(!proxmark5_spi_receive_data(spi_len_header, sizeof(spi_len_header), 100)) {
+
+        // One acquire/release for the whole frame (header + payload), not
+        // one per piece - PM5's HW-CS slave mode starts a fresh frame on
+        // every CS edge, so splitting desyncs the two sides.
+        proxmark5_spi_acquire();
+
+        if(!proxmark5_spi_trx_raw(spi_len_header, sizeof(spi_len_header), 100)) {
+            proxmark5_spi_release();
             furi_delay_ms(100);
             continue;
         }
 
         uint16_t data_length = pm5_u16_le(spi_len_header);
         if(data_length == 0 || data_length > BUFFER_SIZE) {
+            proxmark5_spi_release();
             if(data_length > 0) {
                 FURI_LOG_W(PROXMARK5_LOG_TAG, "Invalid SPI packet length: %u", data_length);
             }
@@ -99,7 +112,10 @@ static int32_t proxmark5_com_spi_task(void* context) {
 
         FURI_LOG_I(PROXMARK5_LOG_TAG, "Data length to receive: %u", data_length);
 
-        if(!proxmark5_spi_receive_data(com_context->packet, data_length, 2000)) {
+        bool got_payload = proxmark5_spi_trx_raw(com_context->packet, data_length, 2000);
+        proxmark5_spi_release();
+
+        if(!got_payload) {
             FURI_LOG_W(PROXMARK5_LOG_TAG, "SPI receive timeout, packet dropped");
             furi_delay_ms(100);
             continue;
@@ -122,6 +138,9 @@ static void proxmark5_com_rx_spi_thread_start(void) {
     com_context->thread_rx_spi =
         furi_thread_alloc_ex("PM5_SPI_RX", 2048, proxmark5_com_spi_task, NULL);
     furi_check(com_context->thread_rx_spi != NULL);
+    // Low priority: background polling, not latency-critical, and avoids
+    // starving the OS timer thread under load.
+    furi_thread_set_priority(com_context->thread_rx_spi, FuriThreadPriorityLow);
     com_context->thread_running = true;
     furi_thread_start(com_context->thread_rx_spi);
 }
@@ -172,10 +191,9 @@ void proxmark5_com_deinit(void) {
     proxmark5_cc_ctrl_deinit();
     proxmark5_uart_deinit();
     proxmark5_spi_deinit();
-    // Ensure OTG is disabled to cut off power to proxmark5
-    if(furi_hal_power_is_otg_enabled()) {
-        furi_hal_power_disable_otg();
-    }
+    // Deliberately do NOT disable OTG here - cutting 5V forces a full PM5
+    // cold boot (~90s) on every relaunch. Leaving it on keeps PM5 powered
+    // so the next handshake short-circuits the wait.
     // Free the communication context and resources
     if(com_context) {
         free(com_context);
@@ -253,24 +271,33 @@ bool proxmark5_com_handshake(void) {
  * @return true if the packet is sent successfully
  * @return false if the packet fails to send
  */
+// Sync preamble, sent before every frame in the same CS-held transaction,
+// so PM5's polled SPI1 reception has a wide enough window to notice the
+// frame start. Must match armsrc/pm5_cep.c's cep_spi_data_available().
+#define SYNC_BYTE 0x55
+#define SYNC_LEN  500 // ~2ms at 2MHz
+
 bool proxmark5_com_send_spi(uint8_t* data, size_t length) {
     if(com_context == NULL || data == NULL || length == 0 || length > BUFFER_SIZE) {
         return false;
     }
 
-    // Send length header first, proxmark5 expects 2 bytes of length header before the actual data
-    if(!proxmark5_spi_send_data((uint8_t*)&length, 2, 1000)) {
-        FURI_LOG_W(PROXMARK5_LOG_TAG, "SPI send failed at length header");
-        return false;
-    }
+    // Build preamble + length header + payload + trailer in one buffer and
+    // send it as a single tx call - splitting the transfer desyncs PM5's
+    // HW-CS slave mode, same as the RX side.
+    uint8_t frame_buf[SYNC_LEN + 2 + BUFFER_SIZE + 1];
+    memset(frame_buf, SYNC_BYTE, SYNC_LEN);
+    frame_buf[SYNC_LEN + 0] = (uint8_t)(length & 0xFF);
+    frame_buf[SYNC_LEN + 1] = (uint8_t)((length >> 8) & 0xFF);
+    memcpy(frame_buf + SYNC_LEN + 2, data, length);
+    frame_buf[SYNC_LEN + 2 + length] = 0x00; // DXL: last byte must be 0x00 to keep the proxmark5 no data rx.
 
-    // Send the actual data after the length header
-    if(!proxmark5_spi_send_data(data, length, 1000)) {
+    proxmark5_spi_acquire();
+    bool ok = proxmark5_spi_tx_raw(frame_buf, SYNC_LEN + 2 + length + 1, 1000);
+    proxmark5_spi_release();
+
+    if(!ok) {
         FURI_LOG_W(PROXMARK5_LOG_TAG, "SPI send failed");
-        return false;
     }
-
-    // DXL: The last byte must be 0x00 to keep the proxmark5 no data rx.
-    uint8_t end_byte = 0x00;
-    return proxmark5_spi_send_data(&end_byte, 1, 1000);
+    return ok;
 }
