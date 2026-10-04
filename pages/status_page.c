@@ -232,7 +232,18 @@ void status_page_start(StatusPage* status_page, const char* title, StatusPageFet
     }
 
     status_page_cleanup_worker(status_page);
-    if(status_page->worker_thread_running) {
+
+    // Check the pointer cleanup_worker() itself nulled out, not
+    // worker_thread_running again - that flag is set by the worker thread
+    // asynchronously and can flip to false in the gap between the two
+    // checks, which used to let this fall through and overwrite
+    // worker_thread without ever joining/freeing the old one (a real
+    // FuriThread leak - same bug as read_hitag2_page.c had, see TODO.md).
+    // cleanup_worker() only leaves worker_thread non-NULL when it decided
+    // the thread was still genuinely running, so checking the same
+    // variable it controls keeps this self-consistent instead of
+    // re-sampling a racy flag.
+    if(status_page->worker_thread) {
         return;
     }
 
