@@ -111,13 +111,7 @@ static bool proxmark5_frame_handle_ng_packet(uint8_t* packet, size_t packet_len)
         return false;
     }
 
-    // Log the data packet. +1 for the NUL terminator snprintf writes after
-    // the last byte - omitting it was a 1-byte heap overflow on every
-    // packet logged, confirmed on real hardware via a garbled byte in this
-    // exact hex dump for larger packets (CEP Status, 56-byte frames) while
-    // smaller ones (Battery, 31-byte frames) stayed clean - a heap region
-    // under more concurrent allocation pressure made the stray out-of-
-    // bounds NUL land somewhere that mattered.
+    // Log the data packet. +1 for snprintf's NUL terminator.
     char* hex_array = (char*)malloc(2 * packet_len + 1);
     if(hex_array) {
         for(size_t i = 0; i < packet_len; i++) {

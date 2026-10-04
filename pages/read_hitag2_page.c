@@ -366,15 +366,8 @@ void read_hitag2_page_start(ReadHitag2Page* read_hitag2_page) {
 
     read_hitag2_page_cleanup_worker(read_hitag2_page);
 
-    // Check the pointer cleanup_worker() itself nulled out, not
-    // worker_thread_running again - that flag is set by the worker thread
-    // asynchronously and can flip to false in the gap between the two
-    // checks, which used to let this fall through and overwrite
-    // worker_thread without ever joining/freeing the old one (a real,
-    // confirmed FuriThread leak - see TODO.md). cleanup_worker() only
-    // leaves worker_thread non-NULL when it decided the thread was still
-    // genuinely running, so checking the same variable it controls keeps
-    // this self-consistent instead of re-sampling a racy flag.
+    // Check cleanup_worker()'s pointer, not worker_thread_running - that flag
+    // can flip false between the two checks and leak the old FuriThread.
     if(read_hitag2_page->worker_thread) {
         return;
     }
