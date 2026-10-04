@@ -145,14 +145,19 @@ static void fmps_cxt_canvas_draw_callback(Canvas* canvas, void* ctx) {
     }
 }
 
-// Stop the proxmark5 handshake thread
+// Stop the proxmark5 handshake thread. Only called from main_page_free(), so
+// blocking here is safe. furi_thread_join() must run unconditionally, not
+// gated behind proxmark5_handshake_thread_running: that flag is set by the
+// thread itself just before it returns, which races ahead of Furi's own
+// kernel-tracked thread state actually transitioning to Stopped - skipping
+// the join when the flag already reads false risks furi_thread_free() being
+// called on a thread the kernel doesn't yet consider stopped, which trips
+// furi_check() and crashes the whole device (confirmed mechanism, see
+// furi_thread_free()'s own state assertion).
 static void proxmark5_handshake_task_stop(MainPage* page) {
-    // If the thread is running, stop it and free the resources
     if(page->proxmark5_handshake_thread) {
-        if(page->proxmark5_handshake_thread_running) {
-            page->proxmark5_handshake_thread_running = false;
-            furi_thread_join(page->proxmark5_handshake_thread);
-        }
+        page->proxmark5_handshake_thread_running = false;
+        furi_thread_join(page->proxmark5_handshake_thread);
         furi_thread_free(page->proxmark5_handshake_thread);
         page->proxmark5_handshake_thread = NULL;
     }
