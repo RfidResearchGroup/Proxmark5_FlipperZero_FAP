@@ -196,10 +196,8 @@ typedef struct {
 
 
 // Capabilities struct to keep track of what functions was compiled in the device firmware
-// Synced against RfidResearchGroup/proxmark3 include/pm3_cmd.h as of CAPABILITIES_VERSION 13 -
-// this vendored copy had drifted as far back as version 6 before this sync (missing
-// compiled_with_seos, every PM5/BWM/CEP field, max_cmd_data_size, em_size/em_allocated).
-// Re-check this struct whenever CAPABILITIES_VERSION changes upstream.
+// Synced against RfidResearchGroup/proxmark3 include/pm3_cmd.h as of
+// CAPABILITIES_VERSION 13. Re-check this struct whenever that version changes upstream.
 typedef struct {
     uint8_t version;
     uint32_t baudrate;

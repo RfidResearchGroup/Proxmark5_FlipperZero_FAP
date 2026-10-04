@@ -21,19 +21,16 @@ int status_test_flash_chip_fetch(
     char lines[STATUS_PAGE_MAX_LINES][STATUS_PAGE_LINE_LEN],
     int* out_line_count);
 
-// Needs CMD_PM5_BWM_GET_BATTERY on the PM5 side (proxmark3-RRG branch
-// pm5-bwm-battery-telemetry, not yet merged upstream as of writing) - shows a
-// clean "N/A" line against any PM5 build that doesn't have it yet.
+// Needs CMD_PM5_BWM_GET_BATTERY - shows a clean "N/A" line against any
+// PM5 build older than that command.
 int status_test_battery_fetch(
     volatile bool* cancel_requested,
     char lines[STATUS_PAGE_MAX_LINES][STATUS_PAGE_LINE_LEN],
     int* out_line_count);
 
-// Needs CMD_CEP_STATUS on the PM5 side (proxmark3-RRG branch pm5-cep-status,
-// not yet merged upstream as of writing) - shows a clean "N/A" line against
-// any PM5 build that doesn't have it yet. Always returns PM3_SUCCESS from the
-// firmware side - a timeout/bad-reply here means an old firmware without this
-// command, not "feature unsupported".
+// Needs CMD_CEP_STATUS - shows a clean "N/A" line against any PM5 build
+// older than that command. Always returns PM3_SUCCESS; a timeout/bad-reply
+// means old firmware, not "feature unsupported".
 int status_test_cep_fetch(
     volatile bool* cancel_requested,
     char lines[STATUS_PAGE_MAX_LINES][STATUS_PAGE_LINE_LEN],

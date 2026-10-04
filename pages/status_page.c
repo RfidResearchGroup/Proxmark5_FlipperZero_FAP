@@ -148,10 +148,8 @@ static int32_t status_page_worker(void* context) {
     model->line_count = count;
     model->scroll_offset = 0;
     for(int i = 0; i < count; i++) {
-        // memcpy, not snprintf("%s", ...): both buffers are the same fixed
-        // size (already null-terminated within it by the fetch function), so
-        // this can't truncate - avoids a -Wformat-truncation false positive
-        // that gcc can't resolve between two identically-sized char arrays.
+        // memcpy not snprintf: same-sized fixed buffers, already
+        // null-terminated - avoids a false -Wformat-truncation warning.
         memcpy(model->lines[i], lines[i], STATUS_PAGE_LINE_LEN);
     }
     view_commit_model(status_page->view, true);
@@ -233,16 +231,8 @@ void status_page_start(StatusPage* status_page, const char* title, StatusPageFet
 
     status_page_cleanup_worker(status_page);
 
-    // Check the pointer cleanup_worker() itself nulled out, not
-    // worker_thread_running again - that flag is set by the worker thread
-    // asynchronously and can flip to false in the gap between the two
-    // checks, which used to let this fall through and overwrite
-    // worker_thread without ever joining/freeing the old one (a real
-    // FuriThread leak - same bug as read_hitag2_page.c had, see TODO.md).
-    // cleanup_worker() only leaves worker_thread non-NULL when it decided
-    // the thread was still genuinely running, so checking the same
-    // variable it controls keeps this self-consistent instead of
-    // re-sampling a racy flag.
+    // Check cleanup_worker()'s pointer, not worker_thread_running - that flag
+    // can flip false between the two checks and leak the old FuriThread.
     if(status_page->worker_thread) {
         return;
     }
