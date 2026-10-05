@@ -111,11 +111,11 @@ static bool proxmark5_frame_handle_ng_packet(uint8_t* packet, size_t packet_len)
         return false;
     }
 
-    // Log the data packet
-    char* hex_array = (char*)malloc(2 * packet_len);
+    // Log the data packet. +1 for snprintf's NUL terminator.
+    char* hex_array = (char*)malloc(2 * packet_len + 1);
     if(hex_array) {
         for(size_t i = 0; i < packet_len; i++) {
-            snprintf(hex_array + (i * 2), 2 * packet_len, "%02X", packet[i]);
+            snprintf(hex_array + (i * 2), 2 * packet_len + 1 - (i * 2), "%02X", packet[i]);
         }
         FURI_LOG_I(PROXMARK5_LOG_TAG, "Packet (hex): %s", hex_array);
         free(hex_array);

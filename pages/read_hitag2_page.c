@@ -366,7 +366,9 @@ void read_hitag2_page_start(ReadHitag2Page* read_hitag2_page) {
 
     read_hitag2_page_cleanup_worker(read_hitag2_page);
 
-    if(read_hitag2_page->worker_thread_running) {
+    // Check cleanup_worker()'s pointer, not worker_thread_running - that flag
+    // can flip false between the two checks and leak the old FuriThread.
+    if(read_hitag2_page->worker_thread) {
         return;
     }
 
