@@ -18,19 +18,14 @@ typedef enum {
     OperatePageViewId,
     // Read Hitag2 operation page
     ReadHitag2PageViewId,
-    // Shared hardware self-test page (Capabilities/Ping/Flash-Chip-ID/Battery/CEP Status)
+    // Paginated hardware-status dashboard (Core/Power/Link)
     StatusPageViewId,
 } Proxmark5ViewId;
 
 typedef enum {
     Proxmark5CustomEventOpenOperatePage,
     Proxmark5CustomEventOpenReadHitag2Page,
-    // Each switches to StatusPageViewId with a different title/fetch pair.
-    Proxmark5CustomEventOpenCapabilitiesPage,
-    Proxmark5CustomEventOpenPingPage,
-    Proxmark5CustomEventOpenFlashChipPage,
-    Proxmark5CustomEventOpenBatteryPage,
-    Proxmark5CustomEventOpenCepStatusPage,
+    Proxmark5CustomEventOpenStatusPage,
 } Proxmark5CustomEvent;
 
 typedef struct {
