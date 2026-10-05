@@ -102,7 +102,7 @@ Proxmark5App* proxmark5_app_alloc() {
         read_hitag2_page_get_view(app->read_hitag2_page));
 
     // Create and add the hardware-status dashboard to the view dispatcher.
-    app->status_page = status_page_create(fmps_cxt_open_operate_page, app);
+    app->status_page = status_page_create();
     view_set_previous_callback(
         status_page_get_view(app->status_page), status_page_previous_callback);
     view_dispatcher_add_view(

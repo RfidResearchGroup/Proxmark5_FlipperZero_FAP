@@ -24,12 +24,35 @@ struct StatusPage {
     FuriThread* worker_thread;
     volatile bool worker_thread_running;
     volatile bool worker_thread_cancel_requested;
-
-    StatusPageBackCallback back_callback;
-    void* back_callback_context;
 };
 
 static const char* const status_page_titles[STATUS_PAGE_PAGE_COUNT] = {"Core", "Power", "Link"};
+
+// Truncates with "..." using real measured glyph widths (FontSecondary is
+// proportional, not monospace) rather than a guessed character budget.
+static void status_page_draw_row(Canvas* canvas, int x, int y, const char* str) {
+    if(!str || str[0] == '\0') {
+        return;
+    }
+    int max_width = 124 - x;
+    if(canvas_string_width(canvas, str) <= max_width) {
+        canvas_draw_str(canvas, x, y, str);
+        return;
+    }
+    char buf[STATUS_PAGE_LINE_LEN];
+    size_t len = strlen(str);
+    if(len >= sizeof(buf)) {
+        len = sizeof(buf) - 1;
+    }
+    for(size_t cut = len; cut > 0; cut--) {
+        snprintf(buf, sizeof(buf), "%.*s...", (int)cut, str);
+        if(canvas_string_width(canvas, buf) <= max_width) {
+            canvas_draw_str(canvas, x, y, buf);
+            return;
+        }
+    }
+    canvas_draw_str(canvas, x, y, "...");
+}
 
 static void status_page_draw_callback(Canvas* canvas, void* context) {
     StatusPageModel* model = context;
@@ -57,38 +80,33 @@ static void status_page_draw_callback(Canvas* canvas, void* context) {
     } else {
         int y = 22;
         for(int i = 0; i < STATUS_PAGE_ROWS_PER_PAGE; i++) {
-            if(model->rows[model->current_page][i][0] != '\0') {
-                canvas_draw_str(canvas, 4, y, model->rows[model->current_page][i]);
-            }
+            status_page_draw_row(canvas, 4, y, model->rows[model->current_page][i]);
             y += 9;
         }
     }
 
-    elements_button_left(canvas, "Back");
     if(model->ui_state == StatusPageStateReady) {
+        elements_button_left(canvas, "Prev");
         elements_button_right(canvas, "Next");
     }
 }
 
+// InputKeyBack (the dedicated hardware button, not Left) is what actually
+// exits this page - handled automatically via status_page_previous_callback,
+// which already calls status_page_stop(). Left/Right only page here.
 static bool status_page_input_callback(InputEvent* event, void* context) {
     StatusPage* status_page = context;
     if(!status_page || !event) {
         return false;
     }
 
-    if(event->type == InputTypeShort && event->key == InputKeyLeft) {
-        status_page_stop(status_page);
-        if(status_page->back_callback) {
-            status_page->back_callback(status_page->back_callback_context);
-        }
-        return true;
-    }
-
-    if(event->type == InputTypeShort && event->key == InputKeyRight) {
+    if(event->type == InputTypeShort &&
+       (event->key == InputKeyLeft || event->key == InputKeyRight)) {
         StatusPageModel* model = view_get_model(status_page->view);
         bool changed = model->ui_state == StatusPageStateReady;
         if(changed) {
-            model->current_page = (model->current_page + 1) % STATUS_PAGE_PAGE_COUNT;
+            int step = event->key == InputKeyRight ? 1 : (STATUS_PAGE_PAGE_COUNT - 1);
+            model->current_page = (model->current_page + step) % STATUS_PAGE_PAGE_COUNT;
         }
         view_commit_model(status_page->view, changed);
         return changed;
@@ -149,9 +167,9 @@ static int32_t status_page_worker(void* context) {
         memcpy(rows[0][2], lines[4], STATUS_PAGE_LINE_LEN);
         memcpy(rows[0][3], lines[5], STATUS_PAGE_LINE_LEN);
     } else {
-        snprintf(rows[0][0], STATUS_PAGE_LINE_LEN, "BWM/CEP: N/A");
-        snprintf(rows[0][2], STATUS_PAGE_LINE_LEN, "MaxCmdData: N/A");
-        snprintf(rows[0][3], STATUS_PAGE_LINE_LEN, "Baud: N/A");
+        snprintf(rows[0][0], STATUS_PAGE_LINE_LEN, "BWM/CEP:   N/A");
+        snprintf(rows[0][2], STATUS_PAGE_LINE_LEN, "MaxCmdData:   N/A");
+        snprintf(rows[0][3], STATUS_PAGE_LINE_LEN, "Baud:   N/A");
     }
 
     count = 0;
@@ -209,8 +227,8 @@ static int32_t status_page_worker(void* context) {
         memcpy(ping_rtt, lines[2], STATUS_PAGE_LINE_LEN);
         memcpy(ping_echo, lines[1], STATUS_PAGE_LINE_LEN);
     } else {
-        snprintf(ping_rtt, STATUS_PAGE_LINE_LEN, "RTT: N/A");
-        snprintf(ping_echo, STATUS_PAGE_LINE_LEN, "Echo: N/A");
+        snprintf(ping_rtt, STATUS_PAGE_LINE_LEN, "RTT:   N/A");
+        snprintf(ping_echo, STATUS_PAGE_LINE_LEN, "Echo:   N/A");
     }
 
     count = 0;
@@ -237,7 +255,7 @@ static int32_t status_page_worker(void* context) {
     return 0;
 }
 
-StatusPage* status_page_create(StatusPageBackCallback back_callback, void* back_callback_context) {
+StatusPage* status_page_create(void) {
     StatusPage* status_page = calloc(1, sizeof(StatusPage));
     if(!status_page) {
         return NULL;
@@ -248,9 +266,6 @@ StatusPage* status_page_create(StatusPageBackCallback back_callback, void* back_
         free(status_page);
         return NULL;
     }
-
-    status_page->back_callback = back_callback;
-    status_page->back_callback_context = back_callback_context;
 
     view_set_context(status_page->view, status_page);
     // Locking: the worker thread mutates this model while the GUI thread draws.

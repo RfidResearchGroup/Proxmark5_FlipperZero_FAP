@@ -5,19 +5,17 @@
 #include <stdbool.h>
 
 // Paginated hardware-status dashboard: 3 fixed pages (Core/Power/Link),
-// flipped with Right. One status_page_start() runs all 5 self-tests once.
+// flipped with Left/Right. Exit is the hardware Back button (via
+// previous_callback) - Left/Right are page navigation only, not Back.
 
 #define STATUS_PAGE_MAX_LINES 8
-#define STATUS_PAGE_LINE_LEN 32
+#define STATUS_PAGE_LINE_LEN 40
 #define STATUS_PAGE_PAGE_COUNT 3
 #define STATUS_PAGE_ROWS_PER_PAGE 4
 
 typedef struct StatusPage StatusPage;
 
-// Invoked when the user leaves the page via the on-screen "Back" (left) button.
-typedef void (*StatusPageBackCallback)(void* context);
-
-StatusPage* status_page_create(StatusPageBackCallback back_callback, void* back_callback_context);
+StatusPage* status_page_create(void);
 void status_page_free(StatusPage* status_page);
 
 View* status_page_get_view(StatusPage* status_page);
