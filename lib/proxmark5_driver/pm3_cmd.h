@@ -196,6 +196,8 @@ typedef struct {
 
 
 // Capabilities struct to keep track of what functions was compiled in the device firmware
+// Synced against RfidResearchGroup/proxmark3 include/pm3_cmd.h as of
+// CAPABILITIES_VERSION 13. Re-check this struct whenever that version changes upstream.
 typedef struct {
     uint8_t version;
     uint32_t baudrate;
@@ -223,6 +225,7 @@ typedef struct {
     bool compiled_with_felica          : 1;
     bool compiled_with_legicrf         : 1;
     bool compiled_with_iclass          : 1;
+    bool compiled_with_seos            : 1;
     bool compiled_with_nfcbarcode      : 1;
     // misc
     bool compiled_with_lcd             : 1;
@@ -231,8 +234,27 @@ typedef struct {
     bool hw_available_flash            : 1;
     bool hw_available_smartcard        : 1;
     bool is_rdv4                       : 1;
+
+    // pm5
+    bool hw_available_fpga_flash       : 1;
+    bool hw_available_i2c_eeprom       : 1;
+    bool is_pm5                        : 1;
+    bool is_pm5_std_ant                : 1;
+
+    // v9+
+    uint16_t max_cmd_data_size;
+
+    // v11+
+    uint16_t em_size;
+    bool em_allocated                  : 1;
+
+    // v12+
+    bool compiled_with_bwm             : 1;
+
+    // v13+
+    bool compiled_with_cep             : 1;
 } PACKED capabilities_t;
-#define CAPABILITIES_VERSION 6
+#define CAPABILITIES_VERSION 13
 extern capabilities_t g_pm3_capabilities;
 
 // For CMD_LF_T55XX_WRITEBL
@@ -471,6 +493,7 @@ typedef struct {
 #define CMD_READ_MEM                                                      0x0106 // legacy
 #define CMD_READ_MEM_DOWNLOAD                                             0x010A
 #define CMD_READ_MEM_DOWNLOADED                                           0x010B
+#define CMD_MAIN_CHIP_UNIQUEID                                            0x010C
 #define CMD_VERSION                                                       0x0107
 #define CMD_STATUS                                                        0x0108
 #define CMD_PING                                                          0x0109
@@ -506,6 +529,7 @@ typedef struct {
 
 #define CMD_FLASHMEM_GET_SIGNATURE                                        0x0147
 #define CMD_FLASHMEM_GET_INFO                                             0x0148
+#define CMD_FLASHMEM_GET_ID                                               0x0125
 
 // We take +0x1000 when having a variant of similar function (todo : make it an argument!)
 #define CMD_SPIFFS_APPEND                                                 0x1132
@@ -1085,5 +1109,45 @@ typedef struct {
    is given as third parameter */
 
 #define START_FLASH_MAGIC 0x54494f44 // 'DOIT'
+
+// --- PM5-only additions, not present in upstream official PM3 ------------------
+// Vendored from RfidResearchGroup/proxmark3 include/pmflash.h + include/pm3_cmd.h.
+// Re-check against those files if either command's reply shape ever changes.
+
+// Reply to CMD_FLASHMEM_GET_INFO.
+typedef struct {
+    uint8_t  manufacturer_id;
+    uint8_t  device_id;
+    uint16_t jedec_id;
+    uint8_t  pages64k;
+} PACKED spi_flash_t;
+
+// PM5, read compact BWM battery telemetry - see include/pm3_cmd.h in the
+// proxmark3-RRG repo for the authoritative definition.
+#define CMD_PM5_BWM_GET_BATTERY 0x0184
+
+typedef struct {
+    bool bwm_present;
+    bool gauge_ok;
+    uint16_t soc_pct;
+    uint16_t voltage_mv;
+    int16_t  current_ma;      // +charge / -discharge
+    uint16_t remaining_mah;
+    uint16_t full_charge_mah;
+    uint16_t design_cap_mah;
+    int16_t  temp_c10;        // tenths of a degree C
+    uint8_t  charger_fault;   // 0 = none, else AW32001E REG09 bits masked 0x3F
+    uint8_t  charge_status;   // 0=not charging,1=pre-charge,2=charging,3=done
+    uint8_t  health_pct;
+} PACKED bwm_battery_info_t;
+
+// PM5, live hardware-status snapshot - see armsrc/appmain.c's CMD_CEP_STATUS
+// case in proxmark3-RRG for the authoritative definition.
+#define CMD_CEP_STATUS 0x0185
+typedef struct {
+    uint8_t  cep_active;
+    bwm_battery_info_t battery;
+    char     fw_version[24];
+} PACKED cep_status_t;
 
 #endif
