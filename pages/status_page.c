@@ -3,21 +3,19 @@
 #include <gui/elements.h>
 #include <string.h>
 #include "status_page.h"
+#include "status_page_tests.h"
 #include "pm3_cmd.h"
 
 typedef enum {
-    StatusPageStateIdle,
     StatusPageStateRunning,
-    StatusPageStateDone,
+    StatusPageStateReady,
+    StatusPageStateUnreachable,
 } StatusPageUiState;
 
 typedef struct {
     StatusPageUiState ui_state;
-    int result;
-    char title[24];
-    char lines[STATUS_PAGE_MAX_LINES][STATUS_PAGE_LINE_LEN];
-    int line_count;
-    int scroll_offset;
+    int current_page;
+    char rows[STATUS_PAGE_PAGE_COUNT][STATUS_PAGE_ROWS_PER_PAGE][STATUS_PAGE_LINE_LEN];
 } StatusPageModel;
 
 struct StatusPage {
@@ -27,11 +25,11 @@ struct StatusPage {
     volatile bool worker_thread_running;
     volatile bool worker_thread_cancel_requested;
 
-    StatusPageFetchFn fetch;
-
     StatusPageBackCallback back_callback;
     void* back_callback_context;
 };
+
+static const char* const status_page_titles[STATUS_PAGE_PAGE_COUNT] = {"Core", "Power", "Link"};
 
 static void status_page_draw_callback(Canvas* canvas, void* context) {
     StatusPageModel* model = context;
@@ -41,41 +39,35 @@ static void status_page_draw_callback(Canvas* canvas, void* context) {
 
     canvas_clear(canvas);
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str(canvas, 4, 10, model->title);
-    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 4, 10, status_page_titles[model->current_page]);
 
+    // uint8_t, not int: lets the compiler bound %d's max width for
+    // -Wformat-truncation instead of assuming a full int's worth of digits.
+    char page_indicator[8];
+    uint8_t page_num = (uint8_t)(model->current_page + 1);
+    uint8_t page_total = STATUS_PAGE_PAGE_COUNT;
+    snprintf(page_indicator, sizeof(page_indicator), "%u/%u", page_num, page_total);
+    canvas_draw_str_aligned(canvas, 124, 10, AlignRight, AlignBottom, page_indicator);
+
+    canvas_set_font(canvas, FontSecondary);
     if(model->ui_state == StatusPageStateRunning) {
         canvas_draw_str(canvas, 4, 24, "Testing... please wait");
-    } else if(model->ui_state == StatusPageStateIdle) {
-        canvas_draw_str(canvas, 4, 24, "Ready");
-    } else if(model->line_count == 0) {
-        const char* msg = "Failed";
-        if(model->result == PM3_ETIMEOUT) {
-            msg = "Timeout";
-        } else if(model->result == PM3_EOPABORTED) {
-            msg = "Cancelled";
-        }
-        canvas_draw_str(canvas, 4, 24, msg);
+    } else if(model->ui_state == StatusPageStateUnreachable) {
+        canvas_draw_str(canvas, 4, 24, "Device not responding");
     } else {
-        int start = model->scroll_offset;
-        int end = start + STATUS_PAGE_VISIBLE_LINES;
-        if(end > model->line_count) {
-            end = model->line_count;
-        }
         int y = 22;
-        for(int i = start; i < end; i++) {
-            canvas_draw_str(canvas, 4, y, model->lines[i]);
-            y += 11;
-        }
-        if(start > 0) {
-            canvas_draw_str(canvas, 122, 20, "^");
-        }
-        if(end < model->line_count) {
-            canvas_draw_str(canvas, 122, 46, "v");
+        for(int i = 0; i < STATUS_PAGE_ROWS_PER_PAGE; i++) {
+            if(model->rows[model->current_page][i][0] != '\0') {
+                canvas_draw_str(canvas, 4, y, model->rows[model->current_page][i]);
+            }
+            y += 9;
         }
     }
 
     elements_button_left(canvas, "Back");
+    if(model->ui_state == StatusPageStateReady) {
+        elements_button_right(canvas, "Next");
+    }
 }
 
 static bool status_page_input_callback(InputEvent* event, void* context) {
@@ -92,17 +84,11 @@ static bool status_page_input_callback(InputEvent* event, void* context) {
         return true;
     }
 
-    if((event->type == InputTypeShort || event->type == InputTypeRepeat) &&
-       (event->key == InputKeyUp || event->key == InputKeyDown)) {
+    if(event->type == InputTypeShort && event->key == InputKeyRight) {
         StatusPageModel* model = view_get_model(status_page->view);
-        bool changed = false;
-        if(event->key == InputKeyUp && model->scroll_offset > 0) {
-            model->scroll_offset--;
-            changed = true;
-        } else if(event->key == InputKeyDown &&
-                  model->scroll_offset < model->line_count - STATUS_PAGE_VISIBLE_LINES) {
-            model->scroll_offset++;
-            changed = true;
+        bool changed = model->ui_state == StatusPageStateReady;
+        if(changed) {
+            model->current_page = (model->current_page + 1) % STATUS_PAGE_PAGE_COUNT;
         }
         view_commit_model(status_page->view, changed);
         return changed;
@@ -123,35 +109,128 @@ static void status_page_cleanup_worker(StatusPage* status_page) {
     status_page->worker_thread = NULL;
 }
 
+static bool status_page_worker_check_cancel(StatusPage* status_page) {
+    if(!status_page->worker_thread_cancel_requested) {
+        return false;
+    }
+    status_page->worker_thread_running = false;
+    return true;
+}
+
 static int32_t status_page_worker(void* context) {
     StatusPage* status_page = context;
     if(!status_page) {
         return 0;
     }
 
+    volatile bool* cancel = &status_page->worker_thread_cancel_requested;
     char lines[STATUS_PAGE_MAX_LINES][STATUS_PAGE_LINE_LEN];
+    char rows[STATUS_PAGE_PAGE_COUNT][STATUS_PAGE_ROWS_PER_PAGE][STATUS_PAGE_LINE_LEN];
+    memset(rows, 0, sizeof(rows));
     int count = 0;
-    int result = status_page->fetch ?
-                     status_page->fetch(&status_page->worker_thread_cancel_requested, lines, &count) :
-                     PM3_ESOFT;
 
-    if(count > STATUS_PAGE_MAX_LINES) {
-        count = STATUS_PAGE_MAX_LINES;
+    int caps_result = status_test_capabilities_fetch(cancel, lines, &count);
+    if(status_page_worker_check_cancel(status_page)) {
+        return 0;
     }
-    if(count < 0) {
-        count = 0;
+
+    // No reply at all means the device isn't responding - skip the other 4
+    // tests (they'd all time out too) and show one error page instead.
+    if(caps_result == PM3_ETIMEOUT) {
+        StatusPageModel* model = view_get_model(status_page->view);
+        model->ui_state = StatusPageStateUnreachable;
+        view_commit_model(status_page->view, true);
+        status_page->worker_thread_running = false;
+        return 0;
     }
+
+    if(count >= 6) {
+        memcpy(rows[0][0], lines[1], STATUS_PAGE_LINE_LEN);
+        memcpy(rows[0][2], lines[4], STATUS_PAGE_LINE_LEN);
+        memcpy(rows[0][3], lines[5], STATUS_PAGE_LINE_LEN);
+    } else {
+        snprintf(rows[0][0], STATUS_PAGE_LINE_LEN, "BWM/CEP: N/A");
+        snprintf(rows[0][2], STATUS_PAGE_LINE_LEN, "MaxCmdData: N/A");
+        snprintf(rows[0][3], STATUS_PAGE_LINE_LEN, "Baud: N/A");
+    }
+
+    count = 0;
+    status_test_flash_chip_fetch(cancel, lines, &count);
+    if(status_page_worker_check_cancel(status_page)) {
+        return 0;
+    }
+    // ChipID is always this fetch fn's last line, whatever its index.
+    if(count > 0) {
+        memcpy(rows[0][1], lines[count - 1], STATUS_PAGE_LINE_LEN);
+    } else {
+        snprintf(rows[0][1], STATUS_PAGE_LINE_LEN, "ChipID: N/A");
+    }
+
+    count = 0;
+    status_test_battery_fetch(cancel, lines, &count);
+    if(status_page_worker_check_cancel(status_page)) {
+        return 0;
+    }
+    if(count >= 1) {
+        memcpy(rows[1][0], lines[0], STATUS_PAGE_LINE_LEN);
+    }
+    if(count >= 2) {
+        memcpy(rows[1][1], lines[1], STATUS_PAGE_LINE_LEN);
+    }
+    if(count >= 3) {
+        memcpy(rows[1][2], lines[2], STATUS_PAGE_LINE_LEN);
+    }
+    {
+        // Fault's index isn't fixed (Health may or may not precede it) -
+        // find it by prefix. Shown in place of Temp when present, since a
+        // real fault is more actionable than ambient temperature.
+        const char* fault_line = NULL;
+        for(int i = 4; i < count; i++) {
+            if(strncmp(lines[i], "Fault:", 6) == 0) {
+                fault_line = lines[i];
+                break;
+            }
+        }
+        if(fault_line) {
+            memcpy(rows[1][3], fault_line, STATUS_PAGE_LINE_LEN);
+        } else if(count >= 4) {
+            memcpy(rows[1][3], lines[3], STATUS_PAGE_LINE_LEN);
+        }
+    }
+
+    count = 0;
+    status_test_ping_fetch(cancel, lines, &count);
+    if(status_page_worker_check_cancel(status_page)) {
+        return 0;
+    }
+    char ping_rtt[STATUS_PAGE_LINE_LEN];
+    char ping_echo[STATUS_PAGE_LINE_LEN];
+    if(count >= 3) {
+        memcpy(ping_rtt, lines[2], STATUS_PAGE_LINE_LEN);
+        memcpy(ping_echo, lines[1], STATUS_PAGE_LINE_LEN);
+    } else {
+        snprintf(ping_rtt, STATUS_PAGE_LINE_LEN, "RTT: N/A");
+        snprintf(ping_echo, STATUS_PAGE_LINE_LEN, "Echo: N/A");
+    }
+
+    count = 0;
+    status_test_cep_fetch(cancel, lines, &count);
+    if(status_page_worker_check_cancel(status_page)) {
+        return 0;
+    }
+    if(count >= 1) {
+        memcpy(rows[2][0], lines[0], STATUS_PAGE_LINE_LEN);
+    }
+    if(count >= 3) {
+        memcpy(rows[2][1], lines[2], STATUS_PAGE_LINE_LEN);
+    }
+    memcpy(rows[2][2], ping_rtt, STATUS_PAGE_LINE_LEN);
+    memcpy(rows[2][3], ping_echo, STATUS_PAGE_LINE_LEN);
 
     StatusPageModel* model = view_get_model(status_page->view);
-    model->result = result;
-    model->ui_state = (result == PM3_EOPABORTED) ? StatusPageStateIdle : StatusPageStateDone;
-    model->line_count = count;
-    model->scroll_offset = 0;
-    for(int i = 0; i < count; i++) {
-        // memcpy not snprintf: same-sized fixed buffers, already
-        // null-terminated - avoids a false -Wformat-truncation warning.
-        memcpy(model->lines[i], lines[i], STATUS_PAGE_LINE_LEN);
-    }
+    model->ui_state = StatusPageStateReady;
+    model->current_page = 0;
+    memcpy(model->rows, rows, sizeof(rows));
     view_commit_model(status_page->view, true);
 
     status_page->worker_thread_running = false;
@@ -180,11 +259,9 @@ StatusPage* status_page_create(StatusPageBackCallback back_callback, void* back_
     view_set_input_callback(status_page->view, status_page_input_callback);
 
     StatusPageModel* model = view_get_model(status_page->view);
-    model->ui_state = StatusPageStateIdle;
-    model->result = PM3_SUCCESS;
-    model->title[0] = '\0';
-    model->line_count = 0;
-    model->scroll_offset = 0;
+    model->ui_state = StatusPageStateRunning;
+    model->current_page = 0;
+    memset(model->rows, 0, sizeof(model->rows));
     view_commit_model(status_page->view, false);
 
     return status_page;
@@ -224,7 +301,7 @@ View* status_page_get_view(StatusPage* status_page) {
     return status_page->view;
 }
 
-void status_page_start(StatusPage* status_page, const char* title, StatusPageFetchFn fetch) {
+void status_page_start(StatusPage* status_page) {
     if(!status_page || !status_page->view) {
         return;
     }
@@ -237,14 +314,10 @@ void status_page_start(StatusPage* status_page, const char* title, StatusPageFet
         return;
     }
 
-    status_page->fetch = fetch;
-
     StatusPageModel* model = view_get_model(status_page->view);
-    snprintf(model->title, sizeof(model->title), "%s", title ? title : "");
     model->ui_state = StatusPageStateRunning;
-    model->result = PM3_SUCCESS;
-    model->line_count = 0;
-    model->scroll_offset = 0;
+    model->current_page = 0;
+    memset(model->rows, 0, sizeof(model->rows));
     view_commit_model(status_page->view, true);
 
     status_page->worker_thread_cancel_requested = false;
@@ -255,8 +328,7 @@ void status_page_start(StatusPage* status_page, const char* title, StatusPageFet
         furi_thread_alloc_ex("StatusPageTask", 8192, status_page_worker, status_page);
     if(!status_page->worker_thread) {
         model = view_get_model(status_page->view);
-        model->ui_state = StatusPageStateDone;
-        model->result = PM3_EMALLOC;
+        model->ui_state = StatusPageStateUnreachable;
         view_commit_model(status_page->view, true);
         return;
     }
