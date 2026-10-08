@@ -3,6 +3,7 @@
 
 typedef enum {
     OperateSubmenuIndexReadHitag2 = 0,
+    OperateSubmenuIndexHf14a,
     OperateSubmenuIndexStatus,
 } OperateSubmenuIndex;
 
@@ -19,6 +20,11 @@ static void operate_page_submenu_callback(void* context, uint32_t index) {
                 operate_page->open_read_hitag2_callback_context);
         }
         break;
+    case OperateSubmenuIndexHf14a:
+        if(operate_page->open_hf14a_callback) {
+            operate_page->open_hf14a_callback(operate_page->open_hf14a_callback_context);
+        }
+        break;
     case OperateSubmenuIndexStatus:
         if(operate_page->open_status_callback) {
             operate_page->open_status_callback(operate_page->open_status_callback_context);
@@ -32,6 +38,8 @@ static void operate_page_submenu_callback(void* context, uint32_t index) {
 OperatePage* operate_page_create(
     OperatePageReadHitag2Callback open_read_hitag2_callback,
     void* open_read_hitag2_callback_context,
+    OperatePageOpenHf14aCallback open_hf14a_callback,
+    void* open_hf14a_callback_context,
     OperatePageOpenStatusCallback open_status_callback,
     void* open_status_callback_context) {
     OperatePage* operate_page = calloc(1, sizeof(OperatePage));
@@ -41,6 +49,8 @@ OperatePage* operate_page_create(
 
     operate_page->open_read_hitag2_callback = open_read_hitag2_callback;
     operate_page->open_read_hitag2_callback_context = open_read_hitag2_callback_context;
+    operate_page->open_hf14a_callback = open_hf14a_callback;
+    operate_page->open_hf14a_callback_context = open_hf14a_callback_context;
     operate_page->open_status_callback = open_status_callback;
     operate_page->open_status_callback_context = open_status_callback_context;
 
@@ -50,6 +60,12 @@ OperatePage* operate_page_create(
         operate_page->submenu,
         "ReadHitag2",
         OperateSubmenuIndexReadHitag2,
+        operate_page_submenu_callback,
+        operate_page);
+    submenu_add_item(
+        operate_page->submenu,
+        "HF 14a Reader",
+        OperateSubmenuIndexHf14a,
         operate_page_submenu_callback,
         operate_page);
     submenu_add_item(

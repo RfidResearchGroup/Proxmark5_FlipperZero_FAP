@@ -4,6 +4,7 @@
 #include <gui/modules/submenu.h>
 
 typedef void (*OperatePageReadHitag2Callback)(void* context);
+typedef void (*OperatePageOpenHf14aCallback)(void* context);
 typedef void (*OperatePageOpenStatusCallback)(void* context);
 
 typedef struct {
@@ -11,6 +12,8 @@ typedef struct {
 
     OperatePageReadHitag2Callback open_read_hitag2_callback;
     void* open_read_hitag2_callback_context;
+    OperatePageOpenHf14aCallback open_hf14a_callback;
+    void* open_hf14a_callback_context;
     OperatePageOpenStatusCallback open_status_callback;
     void* open_status_callback_context;
 } OperatePage;
@@ -18,6 +21,8 @@ typedef struct {
 OperatePage* operate_page_create(
     OperatePageReadHitag2Callback open_read_hitag2_callback,
     void* open_read_hitag2_callback_context,
+    OperatePageOpenHf14aCallback open_hf14a_callback,
+    void* open_hf14a_callback_context,
     OperatePageOpenStatusCallback open_status_callback,
     void* open_status_callback_context);
 void operate_page_free(OperatePage* operate_page);
