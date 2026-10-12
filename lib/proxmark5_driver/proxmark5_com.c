@@ -80,6 +80,11 @@ static int32_t proxmark5_com_spi_task(void* context) {
     UNUSED(context);
     uint8_t spi_len_header[2];
 
+    // Block STOP2 deep sleep for as long as this thread polls CEP - on
+    // battery power STOP2's wake latency (PLL/BLE restart) otherwise stacks
+    // on top of every poll gap below.
+    furi_hal_power_insomnia_enter();
+
     while(com_context->thread_running) {
         // Idle gap on every poll, success or not - otherwise this loop
         // hammers the bus with 0xFF filler continuously.
@@ -130,6 +135,7 @@ static int32_t proxmark5_com_spi_task(void* context) {
         }
     }
 
+    furi_hal_power_insomnia_exit();
     return 0;
 }
 
