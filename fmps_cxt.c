@@ -26,6 +26,12 @@ static void fmps_cxt_open_read_hitag2_page(void* context) {
         app->view_dispatcher, Proxmark5CustomEventOpenReadHitag2Page);
 }
 
+static void fmps_cxt_open_read_hf14a_page(void* context) {
+    Proxmark5App* app = context;
+    view_dispatcher_send_custom_event(
+        app->view_dispatcher, Proxmark5CustomEventOpenReadHf14aPage);
+}
+
 static void fmps_cxt_open_status_page(void* context) {
     Proxmark5App* app = context;
     view_dispatcher_send_custom_event(app->view_dispatcher, Proxmark5CustomEventOpenStatusPage);
@@ -41,6 +47,10 @@ static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
     case Proxmark5CustomEventOpenReadHitag2Page:
         view_dispatcher_switch_to_view(app->view_dispatcher, ReadHitag2PageViewId);
         read_hitag2_page_start(app->read_hitag2_page);
+        return true;
+    case Proxmark5CustomEventOpenReadHf14aPage:
+        view_dispatcher_switch_to_view(app->view_dispatcher, ReadHf14aPageViewId);
+        read_hf14a_page_start(app->read_hf14a_page);
         return true;
     case Proxmark5CustomEventOpenStatusPage:
         view_dispatcher_switch_to_view(app->view_dispatcher, StatusPageViewId);
@@ -60,6 +70,13 @@ static uint32_t operate_page_previous_callback(void* context) {
 static uint32_t read_hitag2_page_previous_callback(void* context) {
     ReadHitag2Page* read_hitag2_page = context;
     read_hitag2_page_stop(read_hitag2_page);
+    return OperatePageViewId;
+}
+
+// Context is the view's context, which is the page itself (set in read_hf14a_page_create).
+static uint32_t read_hf14a_page_previous_callback(void* context) {
+    ReadHf14aPage* read_hf14a_page = context;
+    read_hf14a_page_stop(read_hf14a_page);
     return OperatePageViewId;
 }
 
@@ -84,7 +101,12 @@ Proxmark5App* proxmark5_app_alloc() {
 
     // Create and add the operate submenu page to the view dispatcher
     app->operate_page = operate_page_create(
-        fmps_cxt_open_read_hitag2_page, app, fmps_cxt_open_status_page, app);
+        fmps_cxt_open_read_hitag2_page,
+        app,
+        fmps_cxt_open_read_hf14a_page,
+        app,
+        fmps_cxt_open_status_page,
+        app);
     view_set_previous_callback(
         submenu_get_view(app->operate_page->submenu), operate_page_previous_callback);
     view_dispatcher_add_view(
@@ -100,6 +122,16 @@ Proxmark5App* proxmark5_app_alloc() {
         app->view_dispatcher,
         ReadHitag2PageViewId,
         read_hitag2_page_get_view(app->read_hitag2_page));
+
+    // Create and add HF 14a Reader page to the view dispatcher - same Back
+    // button/destination convention as ReadHitag2 above.
+    app->read_hf14a_page = read_hf14a_page_create(fmps_cxt_open_operate_page, app);
+    view_set_previous_callback(
+        read_hf14a_page_get_view(app->read_hf14a_page), read_hf14a_page_previous_callback);
+    view_dispatcher_add_view(
+        app->view_dispatcher,
+        ReadHf14aPageViewId,
+        read_hf14a_page_get_view(app->read_hf14a_page));
 
     // Create and add the hardware-status dashboard to the view dispatcher.
     app->status_page = status_page_create();
@@ -123,6 +155,7 @@ void proxmark5_app_free(Proxmark5App* app) {
     view_dispatcher_remove_view(app->view_dispatcher, MainPageViewId);
     view_dispatcher_remove_view(app->view_dispatcher, OperatePageViewId);
     view_dispatcher_remove_view(app->view_dispatcher, ReadHitag2PageViewId);
+    view_dispatcher_remove_view(app->view_dispatcher, ReadHf14aPageViewId);
     view_dispatcher_remove_view(app->view_dispatcher, StatusPageViewId);
     if(app->main_page) {
         main_page_free(app->main_page);
@@ -135,6 +168,10 @@ void proxmark5_app_free(Proxmark5App* app) {
     if(app->read_hitag2_page) {
         read_hitag2_page_free(app->read_hitag2_page);
         app->read_hitag2_page = NULL;
+    }
+    if(app->read_hf14a_page) {
+        read_hf14a_page_free(app->read_hf14a_page);
+        app->read_hf14a_page = NULL;
     }
     if(app->status_page) {
         status_page_free(app->status_page);
