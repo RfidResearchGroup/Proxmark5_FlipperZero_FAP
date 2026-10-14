@@ -24,6 +24,10 @@ typedef struct {
     FuriThread* thread_rx_spi;
     bool thread_running;
 
+    // Tick of the last send attempt; RX poll uses a short-sleep window
+    // right after, since a reply typically lands within tens of ms.
+    volatile uint32_t last_send_tick;
+
     // RX packet buffer stored in context (heap-backed via com_context)
     uint8_t packet[BUFFER_SIZE];
 } Proxmark5ComContext;
@@ -75,15 +79,25 @@ static void proxmark5_cc_ctrl_deinit(void) {
     furi_hal_gpio_init_simple(PROXMARK5_GPIO_CC, GpioModeInput);
 }
 
+// Poll gaps: short right after sending a command (a reply typically lands
+// within tens of ms), longer the rest of the time to avoid hammering the bus.
+#define FAST_POLL_WINDOW_MS  400
+#define FAST_POLL_IDLE_MS    5
+#define FAST_POLL_PENALTY_MS 10
+#define IDLE_POLL_MS         20
+#define PENALTY_POLL_MS      100
+
 // Receive data from proxmark5 over SPI and cache parsed response frames.
 static int32_t proxmark5_com_spi_task(void* context) {
     UNUSED(context);
     uint8_t spi_len_header[2];
 
     while(com_context->thread_running) {
+        bool fast = (furi_get_tick() - com_context->last_send_tick) < FAST_POLL_WINDOW_MS;
+
         // Idle gap on every poll, success or not - otherwise this loop
         // hammers the bus with 0xFF filler continuously.
-        furi_delay_ms(20);
+        furi_delay_ms(fast ? FAST_POLL_IDLE_MS : IDLE_POLL_MS);
 
         // Reset length header before spi receive to avoid processing stale length in case of timeout
         spi_len_header[0] = 0;
@@ -96,7 +110,7 @@ static int32_t proxmark5_com_spi_task(void* context) {
 
         if(!proxmark5_spi_trx_raw(spi_len_header, sizeof(spi_len_header), 100)) {
             proxmark5_spi_release();
-            furi_delay_ms(100);
+            furi_delay_ms(fast ? FAST_POLL_PENALTY_MS : PENALTY_POLL_MS);
             continue;
         }
 
@@ -106,7 +120,7 @@ static int32_t proxmark5_com_spi_task(void* context) {
             if(data_length > 0) {
                 FURI_LOG_W(PROXMARK5_LOG_TAG, "Invalid SPI packet length: %u", data_length);
             }
-            furi_delay_ms(100);
+            furi_delay_ms(fast ? FAST_POLL_PENALTY_MS : PENALTY_POLL_MS);
             continue;
         }
 
@@ -117,7 +131,7 @@ static int32_t proxmark5_com_spi_task(void* context) {
 
         if(!got_payload) {
             FURI_LOG_W(PROXMARK5_LOG_TAG, "SPI receive timeout, packet dropped");
-            furi_delay_ms(100);
+            furi_delay_ms(fast ? FAST_POLL_PENALTY_MS : PENALTY_POLL_MS);
             continue;
         }
 
@@ -171,6 +185,7 @@ void proxmark5_com_init(void) {
     com_context->handshake_waiting = false;
     com_context->handshake_matched = false;
     com_context->handshake_state = 0;
+    com_context->last_send_tick = furi_get_tick() - FAST_POLL_WINDOW_MS;
 
     proxmark5_frame_init();
 
@@ -281,6 +296,8 @@ bool proxmark5_com_send_spi(uint8_t* data, size_t length) {
     if(com_context == NULL || data == NULL || length == 0 || length > BUFFER_SIZE) {
         return false;
     }
+
+    com_context->last_send_tick = furi_get_tick();
 
     // Build preamble + length header + payload + trailer in one buffer and
     // send it as a single tx call - splitting the transfer desyncs PM5's
