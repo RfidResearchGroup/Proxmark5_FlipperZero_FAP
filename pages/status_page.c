@@ -26,7 +26,11 @@ struct StatusPage {
     volatile bool worker_thread_cancel_requested;
 };
 
-static const char* const status_page_titles[STATUS_PAGE_PAGE_COUNT] = {"Core", "Power", "Link"};
+static const char* const status_page_titles[STATUS_PAGE_PAGE_COUNT] = {
+    "Core",
+    "Power",
+    "Link",
+    "Sched"};
 
 // Truncates with "..." using real measured glyph widths (FontSecondary is
 // proportional, not monospace) rather than a guessed character budget.
@@ -147,14 +151,22 @@ static int32_t status_page_worker(void* context) {
     memset(rows, 0, sizeof(rows));
     int count = 0;
 
+    // Bookends the whole run below so the "Sched" page's cpu% covers the
+    // same window the test matrix measures, not a separate sampling period.
+    FuriThreadList* thread_list = furi_thread_list_alloc();
+    furi_thread_enumerate(thread_list);
+    uint32_t stats_start_tick = furi_get_tick();
+
     int caps_result = status_test_capabilities_fetch(cancel, lines, &count);
     if(status_page_worker_check_cancel(status_page)) {
+        furi_thread_list_free(thread_list);
         return 0;
     }
 
     // No reply at all means the device isn't responding - skip the other 4
     // tests (they'd all time out too) and show one error page instead.
     if(caps_result == PM3_ETIMEOUT) {
+        furi_thread_list_free(thread_list);
         StatusPageModel* model = view_get_model(status_page->view);
         model->ui_state = StatusPageStateUnreachable;
         view_commit_model(status_page->view, true);
@@ -175,6 +187,7 @@ static int32_t status_page_worker(void* context) {
     count = 0;
     status_test_flash_chip_fetch(cancel, lines, &count);
     if(status_page_worker_check_cancel(status_page)) {
+        furi_thread_list_free(thread_list);
         return 0;
     }
     // ChipID is always this fetch fn's last line, whatever its index.
@@ -187,6 +200,7 @@ static int32_t status_page_worker(void* context) {
     count = 0;
     status_test_battery_fetch(cancel, lines, &count);
     if(status_page_worker_check_cancel(status_page)) {
+        furi_thread_list_free(thread_list);
         return 0;
     }
     if(count >= 1) {
@@ -219,6 +233,7 @@ static int32_t status_page_worker(void* context) {
     count = 0;
     status_test_ping_fetch(cancel, lines, &count);
     if(status_page_worker_check_cancel(status_page)) {
+        furi_thread_list_free(thread_list);
         return 0;
     }
     char ping_rtt[STATUS_PAGE_LINE_LEN];
@@ -234,6 +249,7 @@ static int32_t status_page_worker(void* context) {
     count = 0;
     status_test_cep_fetch(cancel, lines, &count);
     if(status_page_worker_check_cancel(status_page)) {
+        furi_thread_list_free(thread_list);
         return 0;
     }
     if(count >= 1) {
@@ -244,6 +260,23 @@ static int32_t status_page_worker(void* context) {
     }
     memcpy(rows[2][2], ping_rtt, STATUS_PAGE_LINE_LEN);
     memcpy(rows[2][3], ping_echo, STATUS_PAGE_LINE_LEN);
+
+    furi_thread_enumerate(thread_list);
+    uint32_t stats_window_ms = furi_get_tick() - stats_start_tick;
+    float spi_rx_cpu = 0.0f;
+    for(size_t i = 0; i < furi_thread_list_size(thread_list); i++) {
+        FuriThreadListItem* item = furi_thread_list_get_at(thread_list, i);
+        if(item->name && strcmp(item->name, "PM5_SPI_RX") == 0) {
+            spi_rx_cpu = item->cpu;
+            break;
+        }
+    }
+    float isr_time = furi_thread_list_get_isr_time(thread_list);
+    furi_thread_list_free(thread_list);
+
+    snprintf(rows[3][0], STATUS_PAGE_LINE_LEN, "SPI_RX cpu:   %.1f%%", (double)spi_rx_cpu);
+    snprintf(rows[3][1], STATUS_PAGE_LINE_LEN, "ISR:   %.2f%%", (double)isr_time);
+    snprintf(rows[3][2], STATUS_PAGE_LINE_LEN, "Window:   %lums", (unsigned long)stats_window_ms);
 
     StatusPageModel* model = view_get_model(status_page->view);
     model->ui_state = StatusPageStateReady;
