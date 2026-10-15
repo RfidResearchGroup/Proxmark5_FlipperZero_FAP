@@ -4,13 +4,13 @@
 #include <gui/view.h>
 #include <stdbool.h>
 
-// Paginated hardware-status dashboard: 3 fixed pages (Core/Power/Link),
+// Paginated hardware-status dashboard: 4 fixed pages (Core/Power/Link/Sched),
 // flipped with Left/Right. Exit is the hardware Back button (via
 // previous_callback) - Left/Right are page navigation only, not Back.
 
 #define STATUS_PAGE_MAX_LINES 8
 #define STATUS_PAGE_LINE_LEN 40
-#define STATUS_PAGE_PAGE_COUNT 3
+#define STATUS_PAGE_PAGE_COUNT 4
 #define STATUS_PAGE_ROWS_PER_PAGE 4
 
 typedef struct StatusPage StatusPage;
