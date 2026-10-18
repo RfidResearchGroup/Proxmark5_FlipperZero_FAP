@@ -1150,4 +1150,42 @@ typedef struct {
     char     fw_version[24];
 } PACKED cep_status_t;
 
+// CMD_HF_ISO14443A_READER request/reply types - vendored from
+// RfidResearchGroup/proxmark3 include/mifare.h. Re-check against that file
+// if the command's request/reply shape ever changes.
+typedef enum ISO14A_COMMAND {
+    ISO14A_CONNECT = (1 << 0),
+    ISO14A_CLEARTRACE = (1 << 17),
+} iso14a_command_t;
+
+typedef struct {
+    uint32_t flags;     // iso14a_command_t bitmask
+    uint32_t timeout;   // in ETUs, only read when ISO14A_SET_TIMEOUT is set
+    uint32_t wait_us;   // only read when ISO14A_SET_WAIT_US is set
+    uint16_t len;       // bytes in data[]
+    uint16_t lenbits;   // send this many bits instead of whole bytes, 0 = off
+    uint8_t  data[];
+} PACKED iso14a_raw_cmd_t;
+
+typedef struct {
+    uint8_t uid[10];
+    uint8_t uidlen;
+    uint8_t atqa[2];
+    uint8_t sak;
+    uint8_t ats_len;
+    uint8_t ats[256];
+} PACKED iso14a_card_select_t;
+
+// Reply to CMD_HF_ISO14443A_READER. On a CONNECT-only request, resp.status
+// is always PM3_SUCCESS regardless of whether a card was found - the real
+// found/not-found signal is this header's `sel` byte (0 = not found), and
+// the iso14a_card_select_t data starts right after this header, not at
+// resp.data.asBytes[0].
+typedef struct {
+    uint16_t len;   // bytes in data[]
+    uint8_t  sel;   // select status on CONNECT: 0 = not found, 1-3 = found
+    uint8_t  rfu;
+    uint8_t  data[];
+} PACKED iso14a_raw_resp_t;
+
 #endif

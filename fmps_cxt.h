@@ -9,6 +9,7 @@
 #include "pages/main_page.h"
 #include "pages/operate_page.h"
 #include "pages/read_hitag2_page.h"
+#include "pages/read_hf14a_page.h"
 #include "pages/status_page.h"
 
 typedef enum {
@@ -18,6 +19,8 @@ typedef enum {
     OperatePageViewId,
     // Read Hitag2 operation page
     ReadHitag2PageViewId,
+    // HF 14a Reader operation page
+    ReadHf14aPageViewId,
     // Paginated hardware-status dashboard (Core/Power/Link)
     StatusPageViewId,
 } Proxmark5ViewId;
@@ -25,6 +28,7 @@ typedef enum {
 typedef enum {
     Proxmark5CustomEventOpenOperatePage,
     Proxmark5CustomEventOpenReadHitag2Page,
+    Proxmark5CustomEventOpenReadHf14aPage,
     Proxmark5CustomEventOpenStatusPage,
 } Proxmark5CustomEvent;
 
@@ -36,6 +40,7 @@ typedef struct {
     MainPage* main_page;
     OperatePage* operate_page;
     ReadHitag2Page* read_hitag2_page;
+    ReadHf14aPage* read_hf14a_page;
     StatusPage* status_page;
 } Proxmark5App;
 
