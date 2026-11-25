@@ -17,7 +17,8 @@
 // frame start. Must match armsrc/pm5_cep.c's cep_spi_data_available().
 #define SYNC_LEN  500 // ~2ms at 2MHz
 #define COMMAND_FRAME_CAPACITY (SYNC_LEN + 2 + BUFFER_SIZE + 1)
-#define COMMAND_DMA_TIMEOUT_MS 100
+#define SPI_DMA_TIMEOUT_MS 100
+#define REPLY_TRAILER_SIZE 2u
 #define PM3_SUCCESS 0
 #define PM3_EIO     -8
 
@@ -36,8 +37,8 @@ typedef struct {
     volatile uint32_t last_send_tick;
 
     // RX packet buffer stored in context (heap-backed via com_context)
-    uint8_t packet[BUFFER_SIZE];
-    uint8_t command_rx_discard[COMMAND_FRAME_CAPACITY];
+    uint8_t packet[BUFFER_SIZE + REPLY_TRAILER_SIZE];
+    uint8_t spi_scratch[COMMAND_FRAME_CAPACITY];
 } Proxmark5ComContext;
 
 // Global context for proxmark5 communication, it will be initialized in proxmark5_com_init
@@ -139,12 +140,16 @@ static int32_t proxmark5_com_spi_task(void* context) {
 
         FURI_LOG_I(PROXMARK5_LOG_TAG, "Data length to receive: %u", data_length);
 
-        bool got_payload = proxmark5_spi_trx_raw(NULL, com_context->packet, data_length, 2000);
-        if(got_payload &&
-           (data_length != sizeof("yes") || memcmp(com_context->packet, "yes", sizeof("yes")) != 0)) {
-            // PM5 sends two idle bytes after a reply. Clock them before releasing CS.
-            uint8_t trailer[2] = {SYNC_BYTE, SYNC_BYTE};
-            got_payload = proxmark5_spi_trx_raw(trailer, trailer, sizeof(trailer), 100);
+        bool got_payload;
+        if(data_length == sizeof("yes")) {
+            got_payload = proxmark5_spi_trx_raw(NULL, com_context->packet, data_length, 100);
+        } else {
+            // Clock the payload and trailer together so scheduling cannot pause the transfer.
+            uint8_t* tx = com_context->spi_scratch;
+            memset(tx, 0xff, data_length);
+            memset(tx + data_length, SYNC_BYTE, REPLY_TRAILER_SIZE);
+            got_payload = proxmark5_spi_trx_dma_raw(
+                tx, com_context->packet, data_length + REPLY_TRAILER_SIZE, SPI_DMA_TIMEOUT_MS);
         }
         proxmark5_spi_release();
 
@@ -325,8 +330,8 @@ bool proxmark5_com_send_spi(uint8_t* data, size_t length) {
 
     proxmark5_spi_acquire();
     bool ok = proxmark5_spi_trx_dma_raw(
-        frame_buf, com_context->command_rx_discard, SYNC_LEN + 2 + length + 1,
-        COMMAND_DMA_TIMEOUT_MS);
+        frame_buf, com_context->spi_scratch, SYNC_LEN + 2 + length + 1,
+        SPI_DMA_TIMEOUT_MS);
     proxmark5_spi_release();
 
     if(!ok) {
