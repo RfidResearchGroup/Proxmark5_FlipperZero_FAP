@@ -17,6 +17,6 @@ bool proxmark5_spi_receive_data(uint8_t* buffer, size_t length, uint32_t timeout
 void proxmark5_spi_acquire(void);
 void proxmark5_spi_release(void);
 bool proxmark5_spi_tx_raw(uint8_t* data, size_t length, uint32_t timeout);
-bool proxmark5_spi_trx_raw(uint8_t* buffer, size_t length, uint32_t timeout);
+bool proxmark5_spi_trx_raw(const uint8_t* tx, uint8_t* rx, size_t length, uint32_t timeout);
 
 #endif // proxmark5_SPI_H

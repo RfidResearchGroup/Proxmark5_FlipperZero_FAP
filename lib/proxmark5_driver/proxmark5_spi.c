@@ -72,8 +72,8 @@ bool proxmark5_spi_tx_raw(uint8_t* data, size_t length, uint32_t timeout) {
  * @brief Transceive without acquiring/releasing the bus - caller must
  * already hold it via proxmark5_spi_acquire().
  */
-bool proxmark5_spi_trx_raw(uint8_t* buffer, size_t length, uint32_t timeout) {
-    return furi_hal_spi_bus_trx(spi_bus, NULL, buffer, length, timeout);
+bool proxmark5_spi_trx_raw(const uint8_t* tx, uint8_t* rx, size_t length, uint32_t timeout) {
+    return furi_hal_spi_bus_trx(spi_bus, tx, rx, length, timeout);
 }
 
 /**
