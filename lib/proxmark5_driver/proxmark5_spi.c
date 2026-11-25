@@ -61,11 +61,10 @@ void proxmark5_spi_release(void) {
 }
 
 /**
- * @brief Transmit without acquiring/releasing the bus - caller must already
- * hold it via proxmark5_spi_acquire().
+ * @brief Transceive with DMA while the caller holds the bus.
  */
-bool proxmark5_spi_tx_raw(uint8_t* data, size_t length, uint32_t timeout) {
-    return furi_hal_spi_bus_tx(spi_bus, data, length, timeout);
+bool proxmark5_spi_trx_dma_raw(uint8_t* tx, uint8_t* rx, size_t length, uint32_t timeout) {
+    return furi_hal_spi_bus_trx_dma(spi_bus, tx, rx, length, timeout);
 }
 
 /**

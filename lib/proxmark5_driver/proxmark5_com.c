@@ -12,6 +12,12 @@
 
 #define BUFFER_SIZE 600 // Proxmark5 data packet max size is 512bytes.
 #define SYNC_BYTE 0x55
+// Sync preamble, sent before every frame in the same CS-held transaction,
+// so PM5's polled SPI1 reception has a wide enough window to notice the
+// frame start. Must match armsrc/pm5_cep.c's cep_spi_data_available().
+#define SYNC_LEN  500 // ~2ms at 2MHz
+#define COMMAND_FRAME_CAPACITY (SYNC_LEN + 2 + BUFFER_SIZE + 1)
+#define COMMAND_DMA_TIMEOUT_MS 100
 #define PM3_SUCCESS 0
 #define PM3_EIO     -8
 
@@ -31,6 +37,7 @@ typedef struct {
 
     // RX packet buffer stored in context (heap-backed via com_context)
     uint8_t packet[BUFFER_SIZE];
+    uint8_t command_rx_discard[COMMAND_FRAME_CAPACITY];
 } Proxmark5ComContext;
 
 // Global context for proxmark5 communication, it will be initialized in proxmark5_com_init
@@ -299,11 +306,6 @@ bool proxmark5_com_handshake(void) {
  * @return true if the packet is sent successfully
  * @return false if the packet fails to send
  */
-// Sync preamble, sent before every frame in the same CS-held transaction,
-// so PM5's polled SPI1 reception has a wide enough window to notice the
-// frame start. Must match armsrc/pm5_cep.c's cep_spi_data_available().
-#define SYNC_LEN  500 // ~2ms at 2MHz
-
 bool proxmark5_com_send_spi(uint8_t* data, size_t length) {
     if(com_context == NULL || data == NULL || length == 0 || length > BUFFER_SIZE) {
         return false;
@@ -314,7 +316,7 @@ bool proxmark5_com_send_spi(uint8_t* data, size_t length) {
     // Build preamble + length header + payload + trailer in one buffer and
     // send it as a single tx call - splitting the transfer desyncs PM5's
     // HW-CS slave mode, same as the RX side.
-    uint8_t frame_buf[SYNC_LEN + 2 + BUFFER_SIZE + 1];
+    uint8_t frame_buf[COMMAND_FRAME_CAPACITY];
     memset(frame_buf, SYNC_BYTE, SYNC_LEN);
     frame_buf[SYNC_LEN + 0] = (uint8_t)(length & 0xFF);
     frame_buf[SYNC_LEN + 1] = (uint8_t)((length >> 8) & 0xFF);
@@ -322,7 +324,9 @@ bool proxmark5_com_send_spi(uint8_t* data, size_t length) {
     frame_buf[SYNC_LEN + 2 + length] = 0x00; // DXL: last byte must be 0x00 to keep the proxmark5 no data rx.
 
     proxmark5_spi_acquire();
-    bool ok = proxmark5_spi_tx_raw(frame_buf, SYNC_LEN + 2 + length + 1, 1000);
+    bool ok = proxmark5_spi_trx_dma_raw(
+        frame_buf, com_context->command_rx_discard, SYNC_LEN + 2 + length + 1,
+        COMMAND_DMA_TIMEOUT_MS);
     proxmark5_spi_release();
 
     if(!ok) {
