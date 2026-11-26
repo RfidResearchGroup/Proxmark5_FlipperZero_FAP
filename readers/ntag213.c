@@ -1,6 +1,7 @@
 #include <furi.h>
 #include <nfc/helpers/iso14443_crc.h>
 #include "bigbuf.h"
+#include "../pages/saved_ntag213.h"
 #include "ntag213.h"
 #include "proxmark5_frame.h"
 #include "simple_readers.h"
@@ -148,6 +149,10 @@ static int ntag213_read(SimpleReaderResult* result) {
     return PM3_SUCCESS;
 }
 
+static void ntag213_save(const uint8_t* data) {
+    saved_ntag213_save((const Ntag213Pages*)data);
+}
+
 const SimpleReader simple_reader_ntag213 = {
     .title = "NTAG213 Reader",
     .prompt = "Place NTAG213 on HF coil",
@@ -155,5 +160,7 @@ const SimpleReader simple_reader_ntag213 = {
     .no_data_hint = "Use the PM5 HF antenna",
     .data_size = NTAG213_READ_BYTES,
     .read = ntag213_read,
+    .save = ntag213_save,
+    .format = ntag213_format_result,
     .format_details = ntag213_format_details,
 };

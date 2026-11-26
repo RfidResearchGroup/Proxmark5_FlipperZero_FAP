@@ -8,6 +8,7 @@ typedef enum {
     OperateOpenHardware,
     OperateOpenSaved,
     OperateBrowseEm4100,
+    OperateBrowseNtag213,
     OperateBrowseTagReads,
     OperateReadHitag2,
     OperateReadHf14a,

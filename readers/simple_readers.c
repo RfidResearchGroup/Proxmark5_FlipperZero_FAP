@@ -1,6 +1,5 @@
 #include "simple_readers.h"
 
-extern const SimpleReader simple_reader_ntag213;
 extern const SimpleReader simple_reader_em4100;
 extern const SimpleReader simple_reader_t5577;
 

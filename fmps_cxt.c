@@ -4,6 +4,7 @@
 #include "fmps_cxt.h"
 #include "proxmark5_com.h"
 #include "pages/saved_em4100.h"
+#include "pages/saved_ntag213.h"
 #include "pages/saved_tag_read.h"
 
 // For GUI:
@@ -64,6 +65,14 @@ static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
     case OperateOpenSaved:
         view_dispatcher_switch_to_view(app->view_dispatcher, SavedMenuViewId);
         return true;
+    case OperateBrowseNtag213: {
+        Ntag213Pages pages;
+        if(saved_ntag213_browse(&pages) &&
+           simple_reader_page_show_saved(app->simple_reader_page, &simple_reader_ntag213, pages.bytes)) {
+            view_dispatcher_switch_to_view(app->view_dispatcher, SimpleReaderPageViewId);
+        }
+        return true;
+    }
     case OperateBrowseEm4100:
         saved_em4100_browse();
         return true;
@@ -167,8 +176,9 @@ static void open_reader_details(void* context) {
 }
 
 static uint32_t simple_reader_previous_callback(void* context) {
+    bool saved = simple_reader_page_is_saved(context);
     simple_reader_page_stop(context);
-    return OperatePageViewId;
+    return saved ? SavedMenuViewId : OperatePageViewId;
 }
 
 Proxmark5App* proxmark5_app_alloc() {
