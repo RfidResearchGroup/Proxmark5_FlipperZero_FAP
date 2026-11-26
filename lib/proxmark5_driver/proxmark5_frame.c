@@ -28,6 +28,10 @@ typedef struct {
     uint32_t sync_epoch;
     uint32_t sync_sequence;
     PacketResponseNG sync_reply;
+    char* print_buffer;
+    size_t print_capacity;
+    size_t print_length;
+    bool print_truncated;
 } Proxmark5FrameContext;
 
 static Proxmark5FrameContext frame_context;
@@ -88,7 +92,56 @@ static bool proxmark5_frame_enqueue(PacketResponseNG* packet) {
     return true;
 }
 
+bool proxmark5_frame_capture_start(char* buffer, size_t capacity) {
+    furi_assert(buffer && capacity >= 2);
+    proxmark5_frame_lock();
+    bool ready = frame_context.print_buffer == NULL;
+    if(ready) {
+        buffer[0] = '\0';
+        frame_context.print_buffer = buffer;
+        frame_context.print_capacity = capacity;
+        frame_context.print_length = 0;
+        frame_context.print_truncated = false;
+    }
+    proxmark5_frame_unlock();
+    return ready;
+}
+
+void proxmark5_frame_capture_end(bool* truncated) {
+    proxmark5_frame_lock();
+    if(truncated) *truncated = frame_context.print_truncated;
+    frame_context.print_buffer = NULL;
+    proxmark5_frame_unlock();
+}
+
+static void proxmark5_frame_capture_line(const uint8_t* data, size_t length) {
+    proxmark5_frame_lock();
+    char* buffer = frame_context.print_buffer;
+    if(buffer) {
+        size_t pos = frame_context.print_length;
+        size_t limit = frame_context.print_capacity - 1;
+        for(size_t i = 0; i < length && pos < limit; i++) {
+            uint8_t ch = data[i];
+            if(ch == 0x1B && i + 1 < length && data[i + 1] == '[') {
+                i += 2;
+                while(i < length && (data[i] < 0x40 || data[i] > 0x7E)) i++;
+            } else if(ch == '\n' || (ch >= ' ' && ch <= '~')) {
+                buffer[pos++] = ch;
+            }
+        }
+        if(pos < limit) {
+            buffer[pos++] = '\n';
+        } else {
+            frame_context.print_truncated = true;
+        }
+        buffer[pos] = '\0';
+        frame_context.print_length = pos;
+    }
+    proxmark5_frame_unlock();
+}
+
 static void proxmark5_frame_log_print_string(uint8_t* data, size_t length, uint16_t flag) {
+    proxmark5_frame_capture_line(data, length);
     char log_message[PM3_CMD_DATA_SIZE + 1U];
     size_t copy_len = length > PM3_CMD_DATA_SIZE ? PM3_CMD_DATA_SIZE : length;
     memcpy(log_message, data, copy_len);

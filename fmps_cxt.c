@@ -83,6 +83,10 @@ static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
         view_dispatcher_switch_to_view(app->view_dispatcher, ReadHf14aPageViewId);
         read_hf14a_page_start(app->read_hf14a_page);
         return true;
+    case OperateOpenReport:
+        status_report_start(app->status_report);
+        view_dispatcher_switch_to_view(app->view_dispatcher, StatusReportViewId);
+        return true;
     case OperateOpenStatus:
         view_dispatcher_switch_to_view(app->view_dispatcher, StatusPageViewId);
         status_page_start(app->status_page);
@@ -125,6 +129,12 @@ static void fmps_cxt_tick(void* context) {
     live_voltage_page_tick(app->live_voltage_page);
     status_page_tick(app->status_page);
     simple_reader_page_tick(app->simple_reader_page);
+    status_report_tick(app->status_report);
+}
+
+static uint32_t hardware_previous(void* context) {
+    UNUSED(context);
+    return HardwareMenuViewId;
 }
 
 static uint32_t status_page_previous_callback(void* context) {
@@ -191,6 +201,11 @@ Proxmark5App* proxmark5_app_alloc() {
     view_set_previous_callback(reader, simple_reader_previous_callback);
     view_dispatcher_add_view(app->view_dispatcher, SimpleReaderPageViewId, reader);
 
+    app->status_report = status_report_create();
+    View* status_report_view = status_report_get_view(app->status_report);
+    view_set_previous_callback(status_report_view, hardware_previous);
+    view_dispatcher_add_view(app->view_dispatcher, StatusReportViewId, status_report_view);
+
     // Create and add ReadHitag2 page to the view dispatcher
     // The left "Back" button returns to the functions menu, same destination as the
     // hardware back button below.
@@ -249,8 +264,11 @@ void proxmark5_app_free(Proxmark5App* app) {
     status_page_stop_worker(app->status_page);
     antenna_check_page_stop_worker(app->antenna_check_page);
     live_voltage_page_stop_worker(app->live_voltage_page);
+    status_report_stop_worker(app->status_report);
     simple_reader_page_stop_worker(app->simple_reader_page);
 
+    view_dispatcher_remove_view(app->view_dispatcher, StatusReportViewId);
+    status_report_free(app->status_report);
     view_dispatcher_remove_view(app->view_dispatcher, SimpleReaderPageViewId);
     simple_reader_page_free(app->simple_reader_page);
     view_dispatcher_remove_view(app->view_dispatcher, SavedTagReadViewId);
