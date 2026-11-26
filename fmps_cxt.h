@@ -26,6 +26,7 @@ typedef enum {
     StatusPageViewId,
     AntennaCheckPageViewId,
     LiveVoltagePageViewId,
+    HardwareMenuViewId,
 } Proxmark5ViewId;
 
 typedef struct {

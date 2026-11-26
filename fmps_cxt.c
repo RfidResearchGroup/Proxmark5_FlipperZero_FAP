@@ -33,12 +33,23 @@ static void fmps_cxt_open_antenna_check(void* context) {
     fmps_cxt_menu_selected(context, OperateOpenAntennaCheck);
 }
 
+static void fmps_cxt_home_selected(void* context, MainPageChoice choice) {
+    static const OperateAction actions[] = {
+        [MainPageRead] = OperateOpenMenu,
+        [MainPageHardware] = OperateOpenHardware,
+    };
+    fmps_cxt_menu_selected(context, actions[choice]);
+}
+
 static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
     Proxmark5App* app = context;
 
     switch(event) {
     case OperateOpenMenu:
         view_dispatcher_switch_to_view(app->view_dispatcher, OperatePageViewId);
+        return true;
+    case OperateOpenHardware:
+        view_dispatcher_switch_to_view(app->view_dispatcher, HardwareMenuViewId);
         return true;
     case OperateReadHitag2:
         view_dispatcher_switch_to_view(app->view_dispatcher, ReadHitag2PageViewId);
@@ -94,12 +105,12 @@ static void fmps_cxt_tick(void* context) {
 static uint32_t status_page_previous_callback(void* context) {
     StatusPage* status_page = context;
     status_page_stop(status_page);
-    return OperatePageViewId;
+    return HardwareMenuViewId;
 }
 
-static uint32_t functions_menu_previous_callback(void* context) {
+static uint32_t hardware_menu_previous_callback(void* context) {
     UNUSED(context);
-    return OperatePageViewId;
+    return HardwareMenuViewId;
 }
 
 static uint32_t live_voltage_previous_callback(void* context) {
@@ -117,7 +128,7 @@ Proxmark5App* proxmark5_app_alloc() {
     view_dispatcher_attach_to_gui(app->view_dispatcher, app->gui, ViewDispatcherTypeFullscreen);
 
     // Create and add the main page view to the view dispatcher
-    app->main_page = main_page_create(fmps_cxt_open_operate_page, app);
+    app->main_page = main_page_create(fmps_cxt_home_selected, app);
     view_dispatcher_add_view(app->view_dispatcher, MainPageViewId, app->main_page->canvas_view);
 
     // Create and add the operate submenu page to the view dispatcher
@@ -126,6 +137,10 @@ Proxmark5App* proxmark5_app_alloc() {
         submenu_get_view(app->operate_page->submenu), operate_page_previous_callback);
     view_dispatcher_add_view(
         app->view_dispatcher, OperatePageViewId, submenu_get_view(app->operate_page->submenu));
+
+    View* hardware_menu = submenu_get_view(app->operate_page->hardware_submenu);
+    view_set_previous_callback(hardware_menu, operate_page_previous_callback);
+    view_dispatcher_add_view(app->view_dispatcher, HardwareMenuViewId, hardware_menu);
 
     // Create and add ReadHitag2 page to the view dispatcher
     // The left "Back" button returns to the functions menu, same destination as the
@@ -157,7 +172,7 @@ Proxmark5App* proxmark5_app_alloc() {
 
     app->antenna_check_page = antenna_check_page_create(fmps_cxt_open_live_voltage, app);
     View* antenna_check_view = antenna_check_page_get_view(app->antenna_check_page);
-    view_set_previous_callback(antenna_check_view, functions_menu_previous_callback);
+    view_set_previous_callback(antenna_check_view, hardware_menu_previous_callback);
     view_dispatcher_add_view(app->view_dispatcher, AntennaCheckPageViewId, antenna_check_view);
 
     app->live_voltage_page = live_voltage_page_create(fmps_cxt_open_antenna_check, app);
@@ -188,6 +203,7 @@ void proxmark5_app_free(Proxmark5App* app) {
 
     view_dispatcher_remove_view(app->view_dispatcher, MainPageViewId);
     view_dispatcher_remove_view(app->view_dispatcher, OperatePageViewId);
+    view_dispatcher_remove_view(app->view_dispatcher, HardwareMenuViewId);
     view_dispatcher_remove_view(app->view_dispatcher, ReadHitag2PageViewId);
     view_dispatcher_remove_view(app->view_dispatcher, ReadHf14aPageViewId);
     view_dispatcher_remove_view(app->view_dispatcher, StatusPageViewId);
