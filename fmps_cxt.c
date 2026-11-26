@@ -3,6 +3,8 @@
 #include <fmps_cxt_icons.h>
 #include "fmps_cxt.h"
 #include "proxmark5_com.h"
+#include "pages/saved_em4100.h"
+#include "pages/saved_tag_read.h"
 
 // For GUI:
 //  https://github.com/jamisonderek/flipper-zero-tutorials/wiki/User-Interface#viewdisptacher
@@ -36,6 +38,7 @@ static void fmps_cxt_open_antenna_check(void* context) {
 static void fmps_cxt_home_selected(void* context, MainPageChoice choice) {
     static const OperateAction actions[] = {
         [MainPageRead] = OperateOpenMenu,
+        [MainPageSaved] = OperateOpenSaved,
         [MainPageHardware] = OperateOpenHardware,
     };
     fmps_cxt_menu_selected(context, actions[choice]);
@@ -44,9 +47,30 @@ static void fmps_cxt_home_selected(void* context, MainPageChoice choice) {
 static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
     Proxmark5App* app = context;
 
+    if(event >= OperateSimpleReaderFirst) {
+        size_t index = event - OperateSimpleReaderFirst;
+        if(index >= simple_reader_count) return false;
+        simple_reader_page_start(app->simple_reader_page, simple_readers[index]);
+        view_dispatcher_switch_to_view(app->view_dispatcher, SimpleReaderPageViewId);
+        return true;
+    }
+
     switch(event) {
     case OperateOpenMenu:
         view_dispatcher_switch_to_view(app->view_dispatcher, OperatePageViewId);
+        return true;
+    case OperateOpenSaved:
+        view_dispatcher_switch_to_view(app->view_dispatcher, SavedMenuViewId);
+        return true;
+    case OperateBrowseEm4100:
+        saved_em4100_browse();
+        return true;
+    case OperateBrowseTagReads:
+        if(saved_tag_read_browse(app->saved_tag_text)) {
+            text_box_reset(app->saved_tag_view);
+            text_box_set_text(app->saved_tag_view, furi_string_get_cstr(app->saved_tag_text));
+            view_dispatcher_switch_to_view(app->view_dispatcher, SavedTagReadViewId);
+        }
         return true;
     case OperateOpenHardware:
         view_dispatcher_switch_to_view(app->view_dispatcher, HardwareMenuViewId);
@@ -100,6 +124,7 @@ static void fmps_cxt_tick(void* context) {
     antenna_check_page_tick(app->antenna_check_page);
     live_voltage_page_tick(app->live_voltage_page);
     status_page_tick(app->status_page);
+    simple_reader_page_tick(app->simple_reader_page);
 }
 
 static uint32_t status_page_previous_callback(void* context) {
@@ -116,6 +141,16 @@ static uint32_t hardware_menu_previous_callback(void* context) {
 static uint32_t live_voltage_previous_callback(void* context) {
     UNUSED(context);
     return AntennaCheckPageViewId;
+}
+
+static uint32_t saved_record_previous_callback(void* context) {
+    UNUSED(context);
+    return SavedMenuViewId;
+}
+
+static uint32_t simple_reader_previous_callback(void* context) {
+    simple_reader_page_stop(context);
+    return OperatePageViewId;
 }
 
 Proxmark5App* proxmark5_app_alloc() {
@@ -141,6 +176,20 @@ Proxmark5App* proxmark5_app_alloc() {
     View* hardware_menu = submenu_get_view(app->operate_page->hardware_submenu);
     view_set_previous_callback(hardware_menu, operate_page_previous_callback);
     view_dispatcher_add_view(app->view_dispatcher, HardwareMenuViewId, hardware_menu);
+
+    View* saved_menu = submenu_get_view(app->operate_page->saved_submenu);
+    view_set_previous_callback(saved_menu, operate_page_previous_callback);
+    view_dispatcher_add_view(app->view_dispatcher, SavedMenuViewId, saved_menu);
+    app->saved_tag_text = furi_string_alloc();
+    app->saved_tag_view = text_box_alloc();
+    View* saved_result = text_box_get_view(app->saved_tag_view);
+    view_set_previous_callback(saved_result, saved_record_previous_callback);
+    view_dispatcher_add_view(app->view_dispatcher, SavedTagReadViewId, saved_result);
+
+    app->simple_reader_page = simple_reader_page_create();
+    View* reader = simple_reader_page_get_view(app->simple_reader_page);
+    view_set_previous_callback(reader, simple_reader_previous_callback);
+    view_dispatcher_add_view(app->view_dispatcher, SimpleReaderPageViewId, reader);
 
     // Create and add ReadHitag2 page to the view dispatcher
     // The left "Back" button returns to the functions menu, same destination as the
@@ -200,6 +249,14 @@ void proxmark5_app_free(Proxmark5App* app) {
     status_page_stop_worker(app->status_page);
     antenna_check_page_stop_worker(app->antenna_check_page);
     live_voltage_page_stop_worker(app->live_voltage_page);
+    simple_reader_page_stop_worker(app->simple_reader_page);
+
+    view_dispatcher_remove_view(app->view_dispatcher, SimpleReaderPageViewId);
+    simple_reader_page_free(app->simple_reader_page);
+    view_dispatcher_remove_view(app->view_dispatcher, SavedTagReadViewId);
+    text_box_free(app->saved_tag_view);
+    furi_string_free(app->saved_tag_text);
+    view_dispatcher_remove_view(app->view_dispatcher, SavedMenuViewId);
 
     view_dispatcher_remove_view(app->view_dispatcher, MainPageViewId);
     view_dispatcher_remove_view(app->view_dispatcher, OperatePageViewId);

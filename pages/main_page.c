@@ -11,6 +11,7 @@ typedef struct {
 
 static const char* const main_page_items[MainPageChoiceCount] = {
     [MainPageRead] = "Read",
+    [MainPageSaved] = "Saved",
     [MainPageHardware] = "Hardware",
 };
 
@@ -28,7 +29,7 @@ static bool main_page_input_callback(InputEvent* event, void* context) {
 
     MainPageModel* model = view_get_model(page->canvas_view);
     MainPageChoice choice = model->selected;
-    bool available = model->connected;
+    bool available = model->connected || choice == MainPageSaved;
     view_commit_model(page->canvas_view, false);
     if(available) page->on_select(page->callback_context, choice);
     return true;
