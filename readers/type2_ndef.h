@@ -1,6 +1,7 @@
 #ifndef TYPE2_NDEF_H
 #define TYPE2_NDEF_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -18,5 +19,7 @@ typedef enum {
 
 Type2NdefResult type2_ndef_read(
     const uint8_t* data, size_t size, char* text, size_t text_size);
+
+bool type2_ndef_replace_text(uint8_t* data, size_t size, const char* text);
 
 #endif

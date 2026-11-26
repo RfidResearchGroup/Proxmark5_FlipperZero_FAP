@@ -22,6 +22,7 @@ typedef struct {
     const char* no_data;
     const char* no_data_hint;
     size_t data_size;
+    bool has_actions;
     int (*read)(SimpleReaderResult* result);
     void (*save)(const uint8_t* data);
     void (*format)(SimpleReaderResult* result);

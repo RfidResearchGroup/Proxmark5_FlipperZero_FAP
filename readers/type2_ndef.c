@@ -380,3 +380,43 @@ Type2NdefResult type2_ndef_read(
     }
     return Type2NdefEmpty;
 }
+
+bool type2_ndef_replace_text(uint8_t* data, size_t size, const char* text) {
+    static const uint8_t record[] = {0x03, 0, 0xd1, 1, 0, 'T', 2, 'e', 'n'};
+    size_t length = 0;
+    for(; text[length]; length++) {
+        if((unsigned char)text[length] < 0x20 || (unsigned char)text[length] > 0x7e) return false;
+    }
+    size_t end = sizeof(record) + length + 1;
+    if(!length || end > size || length + 7 >= 0xff) return false;
+
+    size_t old_end = 0;
+    if(data[0] == 0x03) {
+        size_t message_size = data[1];
+        old_end = 2 + message_size + 1;
+        if(old_end > size || data[old_end - 1] != 0xfe) return false;
+        if(message_size &&
+           (message_size < 5 || data[2] != 0xd1 || data[3] != 1 ||
+            data[4] + 4U != message_size || data[5] != 'T' ||
+            (data[6] & 0xc0) || (data[6] & 0x3f) >= data[4])) {
+            return false;
+        }
+    } else if(data[0] == 0xfe) {
+        old_end = 1;
+    } else {
+        for(size_t i = 0; i < size; i++) {
+            if(data[i]) return false;
+        }
+    }
+
+    for(size_t i = old_end; i < end; i++) {
+        if(data[i]) return false;
+    }
+    for(size_t i = end; i < old_end; i++) data[i] = 0;
+    memcpy(data, record, sizeof(record));
+    data[1] = length + 7;
+    data[4] = length + 3;
+    memcpy(data + sizeof(record), text, length);
+    data[end - 1] = 0xfe;
+    return true;
+}

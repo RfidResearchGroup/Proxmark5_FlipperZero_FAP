@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the Type 2 NDEF parser with complete and truncated records."""
+"""Check Type 2 NDEF parsing and text replacement."""
 
 import os
 import shlex
@@ -133,6 +133,29 @@ int main(void) {
     wifi[7] = 40;
     assert(read_mime(wifi_type, wifi, sizeof(wifi), text, sizeof(text)) == Type2NdefInvalid);
     assert(text[0] == '\0');
+
+    uint8_t data[144] = {0};
+    char full[135];
+    memset(full, 'x', sizeof(full) - 1);
+    full[sizeof(full) - 1] = 0;
+    assert(type2_ndef_replace_text(data, sizeof(data), full));
+    assert(type2_ndef_read(data, sizeof(data), text, sizeof(text)) == Type2NdefText);
+    assert(!strcmp(text, full) && data[143] == 0xfe);
+    assert(type2_ndef_replace_text(data, sizeof(data), "Hi"));
+    assert(type2_ndef_read(data, sizeof(data), text, sizeof(text)) == Type2NdefText);
+    assert(!strcmp(text, "Hi"));
+    for(size_t i = 12; i < sizeof(data); i++) assert(data[i] == 0);
+
+    data[16] = 0x5a;
+    assert(type2_ndef_replace_text(data, sizeof(data), "RF"));
+    assert(data[16] == 0x5a);
+    assert(!type2_ndef_replace_text(data, sizeof(data), full));
+    assert(!type2_ndef_replace_text(data, sizeof(data), "not\nprintable"));
+    uint8_t other[144] = {0};
+    memcpy(other, uri, sizeof(uri));
+    other[sizeof(uri)] = 0xfe;
+    assert(!type2_ndef_replace_text(other, sizeof(other), "Hi"));
+    assert(!memcmp(other, uri, sizeof(uri)) && other[sizeof(uri)] == 0xfe);
     return 0;
 }
 '''

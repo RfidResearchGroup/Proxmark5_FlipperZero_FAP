@@ -1,6 +1,7 @@
 #include <furi.h>
 #include <nfc/helpers/iso14443_crc.h>
 #include "../pages/saved_ntag213.h"
+#include "lf_capture.h"
 #include "ntag213.h"
 #include "proxmark5_frame.h"
 #include "simple_readers.h"
@@ -14,11 +15,13 @@
 #define NTAG21X_VERSION_TIMEOUT_ETU 2100U // About 20 ms.
 #define NTAG21X_FAST_READ_PAGES 42U
 #define NTAG21X_FAST_READ_ATTEMPTS 4U
+#define NTAG21X_CC_PAGE 3U
+#define NTAG21X_TEXT_OVERHEAD 10U
 
 static const Ntag21xModel models[] = {
-    {"NTAG213", {0x00, 0x04, 0x04, 0x02, 0x01, 0x00, 0x0f, 0x03}, 40, 45},
-    {"NTAG215", {0x00, 0x04, 0x04, 0x02, 0x01, 0x00, 0x11, 0x03}, 130, 135},
-    {"NTAG216", {0x00, 0x04, 0x04, 0x02, 0x01, 0x00, 0x13, 0x03}, NTAG21X_MAX_READ_PAGES, 231},
+    {"NTAG213", {0x00, 0x04, 0x04, 0x02, 0x01, 0x00, 0x0f, 0x03}, 40, 45, 0x12},
+    {"NTAG215", {0x00, 0x04, 0x04, 0x02, 0x01, 0x00, 0x11, 0x03}, 130, 135, 0x3e},
+    {"NTAG216", {0x00, 0x04, 0x04, 0x02, 0x01, 0x00, 0x13, 0x03}, NTAG21X_MAX_READ_PAGES, 231, 0x6d},
 };
 
 const Ntag21xModel* ntag21x_model_for_version(const uint8_t version[NTAG21X_VERSION_BYTES]) {
@@ -154,7 +157,7 @@ static bool ntag21x_field_off(void) {
 static const char* ntag21x_format_ndef(
     const uint8_t* pages, const Ntag21xModel* model, char* details, size_t size) {
     details[0] = '\0';
-    const uint8_t* capability = pages + 3 * NTAG21X_PAGE_BYTES;
+    const uint8_t* capability = pages + NTAG21X_CC_PAGE * NTAG21X_PAGE_BYTES;
     if(capability[0] != 0xe1 || capability[1] >> 4 != 1) return "NDEF: unformatted";
     size_t data_size = capability[2] * 8U;
     size_t user_size = (model->read_pages - NTAG21X_USER_START) * NTAG21X_PAGE_BYTES;
@@ -244,8 +247,148 @@ const SimpleReader simple_reader_ntag21x = {
     .no_data = "No NTAG21x found",
     .no_data_hint = "Use the PM5 HF antenna",
     .data_size = sizeof(Ntag21xPages),
+    .has_actions = true,
     .read = ntag21x_read,
     .save = ntag21x_save,
     .format = ntag21x_format_result,
     .format_details = ntag21x_format_details,
 };
+
+static size_t ntag21x_ndef_offset(const Ntag21xModel* model, const uint8_t* user) {
+    // NTAG213 ships with a Lock Control TLV before the NDEF TLV.
+    static const uint8_t lock_tlv[] = {0x01, 0x03, 0xa0, 0x0c, 0x34};
+    return model == &models[0] && !memcmp(user, lock_tlv, sizeof(lock_tlv)) ?
+               sizeof(lock_tlv) :
+               0;
+}
+
+size_t ntag21x_write_text_max(const Ntag21xPages* pages) {
+    const Ntag21xModel* model = ntag21x_model_for_version(pages->version);
+    if(!model) return 0;
+    const uint8_t* user = pages->bytes + NTAG21X_USER_START * NTAG21X_PAGE_BYTES;
+    size_t limit = model->cc_size * 8U - ntag21x_ndef_offset(model, user) - NTAG21X_TEXT_OVERHEAD;
+    return MIN(limit, NTAG21X_TEXT_MAX);
+}
+
+static bool ntag21x_write_page(uint8_t page, const uint8_t* bytes, PacketResponseNG* reply) {
+    uint8_t request[2 + NTAG21X_PAGE_BYTES] = {0xa2, page};
+    memcpy(request + 2, bytes, NTAG21X_PAGE_BYTES);
+    if(ntag21x_raw(request, sizeof(request), 0, reply) != PM3_SUCCESS) return false;
+    const iso14a_raw_resp_t* response = (const iso14a_raw_resp_t*)reply->data.asBytes;
+    return response->len == 1 && response->data[0] == 0x0a;
+}
+
+static Ntag21xWriteResult ntag21x_write_selected(
+    const Ntag21xModel* model,
+    const Ntag21xPages* expected,
+    const char* text,
+    Ntag21xWriteProgress progress,
+    void* context,
+    uint8_t* current,
+    uint8_t* new_user,
+    PacketResponseNG* reply) {
+    size_t read_size = model->read_pages * NTAG21X_PAGE_BYTES;
+    size_t user_start = NTAG21X_USER_START * NTAG21X_PAGE_BYTES;
+    size_t ndef_size = model->cc_size * 8U;
+    if(ntag21x_fast_read(model->read_pages + 2U, current, reply) != PM3_SUCCESS) return Ntag21xWriteLinkError;
+    if(memcmp(current, expected->bytes, read_size)) return Ntag21xWriteTagChanged;
+
+    const uint8_t* locks = current + read_size;
+    const uint8_t* config = locks + NTAG21X_PAGE_BYTES;
+    if(current[10] || current[11] || locks[0] || locks[1] || locks[2] ||
+       config[3] < model->read_pages) {
+        return Ntag21xWriteProtected;
+    }
+
+    const uint8_t capability[] = {0xe1, 0x10, model->cc_size, 0x00};
+    const uint8_t* old_user = current + user_start;
+    size_t ndef_offset = ntag21x_ndef_offset(model, old_user);
+    memcpy(new_user, old_user, ndef_size);
+    // Mirroring can change readback without changing the stored bytes.
+    if(memcmp(current + NTAG21X_CC_PAGE * NTAG21X_PAGE_BYTES, capability, sizeof(capability)) ||
+       (config[0] & 0xc0) ||
+       !type2_ndef_replace_text(new_user + ndef_offset, ndef_size - ndef_offset, text)) {
+        return Ntag21xWriteUnsupported;
+    }
+    if(!memcmp(old_user, new_user, ndef_size)) return Ntag21xWriteVerified;
+
+    size_t publish = ndef_offset / NTAG21X_PAGE_BYTES * NTAG21X_PAGE_BYTES;
+    size_t total = 2; // Clear the NDEF length, then publish it last.
+    for(size_t offset = publish + NTAG21X_PAGE_BYTES; offset < ndef_size;
+        offset += NTAG21X_PAGE_BYTES) {
+        if(memcmp(old_user + offset, new_user + offset, NTAG21X_PAGE_BYTES)) total++;
+    }
+
+    uint8_t empty_page[NTAG21X_PAGE_BYTES];
+    memcpy(empty_page, old_user + publish, sizeof(empty_page));
+    const uint8_t empty_ndef[] = {0x03, 0x00, 0xfe};
+    memcpy(empty_page + (ndef_offset - publish), empty_ndef, sizeof(empty_ndef));
+    uint8_t publish_page = NTAG21X_USER_START + publish / NTAG21X_PAGE_BYTES;
+    progress(Ntag21xWritePages, 0, total, context);
+    if(!ntag21x_write_page(publish_page, empty_page, reply)) return Ntag21xWriteIncomplete;
+    size_t done = 1;
+    for(size_t offset = publish + NTAG21X_PAGE_BYTES; offset < ndef_size;
+        offset += NTAG21X_PAGE_BYTES) {
+        if(!memcmp(old_user + offset, new_user + offset, NTAG21X_PAGE_BYTES)) continue;
+        progress(Ntag21xWritePages, done, total, context);
+        if(!ntag21x_write_page(NTAG21X_USER_START + offset / NTAG21X_PAGE_BYTES,
+                               new_user + offset,
+                               reply)) {
+            return Ntag21xWriteIncomplete;
+        }
+        done++;
+    }
+    progress(Ntag21xWritePages, done, total, context);
+    if(!ntag21x_write_page(publish_page, new_user + publish, reply)) return Ntag21xWriteIncomplete;
+
+    size_t ndef_end = user_start + ndef_size;
+    progress(Ntag21xWriteVerifying, 0, 0, context);
+    if(ntag21x_fast_read(model->read_pages, current, reply) != PM3_SUCCESS ||
+       memcmp(current, expected->bytes, user_start) || memcmp(old_user, new_user, ndef_size) ||
+       memcmp(current + ndef_end, expected->bytes + ndef_end, read_size - ndef_end)) {
+        return Ntag21xWriteIncomplete;
+    }
+    return Ntag21xWriteVerified;
+}
+
+Ntag21xWriteResult ntag21x_write_text(
+    const Ntag21xPages* expected,
+    const char* text,
+    Ntag21xWriteProgress progress,
+    void* context,
+    bool* cleanup_ok) {
+    *cleanup_ok = true;
+    const Ntag21xModel* model = ntag21x_model_for_version(expected->version);
+    if(!model) return Ntag21xWriteUnsupported;
+    size_t current_size = (model->read_pages + 2U) * NTAG21X_PAGE_BYTES;
+    uint8_t* workspace = lf_capture_alloc(current_size + model->cc_size * 8U);
+    if(!workspace) return Ntag21xWriteNoMemory;
+
+    uint8_t expected_uid[NTAG21X_UID_BYTES];
+    uint8_t selected_uid[NTAG21X_UID_BYTES];
+    PacketResponseNG reply;
+    const Ntag21xModel* selected_model;
+    ntag21x_pages_uid(expected, expected_uid);
+    proxmark5_frame_begin_operation(NULL);
+    progress(Ntag21xWriteChecking, 0, 0, context);
+    Ntag21xWriteResult result = Ntag21xWriteLinkError;
+    int status = ntag21x_select(selected_uid, &selected_model, &reply);
+    if(status == PM3_SUCCESS) {
+        if(model != selected_model || memcmp(expected_uid, selected_uid, sizeof(selected_uid))) {
+            result = Ntag21xWriteTagChanged;
+        } else {
+            result = ntag21x_write_selected(
+                model, expected, text, progress, context, workspace, workspace + current_size, &reply);
+        }
+    } else if(status == PM3_ENODATA) {
+        result = Ntag21xWriteTagChanged;
+    }
+
+    *cleanup_ok = false;
+    for(unsigned attempt = 0; attempt < 2 && !*cleanup_ok; attempt++) {
+        *cleanup_ok = ntag21x_field_off();
+    }
+    proxmark5_frame_end_operation();
+    free(workspace);
+    return result;
+}
