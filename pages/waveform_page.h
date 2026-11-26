@@ -7,6 +7,7 @@ typedef struct WaveformPage WaveformPage;
 
 typedef enum {
     WaveformLf,
+    WaveformHf,
 } WaveformBand;
 
 WaveformPage* waveform_page_create(void);

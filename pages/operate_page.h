@@ -8,6 +8,8 @@ typedef enum {
     OperateOpenHardware,
     OperateOpenSaved,
     OperateOpenCapture,
+    OperateCaptureHf,
+    OperateBrowseHf,
     OperateCaptureLf,
     OperateBrowseLf,
     OperateBrowseEm4100,

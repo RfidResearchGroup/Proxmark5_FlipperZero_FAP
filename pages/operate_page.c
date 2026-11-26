@@ -21,8 +21,11 @@ OperatePage* operate_page_create(SubmenuItemCallback callback, void* context) {
 
     submenu_add_item(operate_page->saved_submenu, "LF Waveform", OperateBrowseLf, callback, context);
 
+    submenu_add_item(operate_page->saved_submenu, "HF Waveform", OperateBrowseHf, callback, context);
+
     operate_page->capture_submenu = submenu_alloc();
     submenu_set_header(operate_page->capture_submenu, "Capture");
+    submenu_add_item(operate_page->capture_submenu, "HF Waveform", OperateCaptureHf, callback, context);
     submenu_add_item(operate_page->capture_submenu, "LF Waveform", OperateCaptureLf, callback, context);
 
     operate_page->hardware_submenu = submenu_alloc();

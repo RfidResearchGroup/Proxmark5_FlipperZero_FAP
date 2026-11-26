@@ -4,6 +4,7 @@
 #include <storage/storage.h>
 #include "../readers/bigbuf.h"
 #include "../readers/lf_capture.h"
+#include "../readers/hf_waveform.h"
 #include "waveform_page.h"
 #include "proxmark5_alloc.h"
 #include "proxmark5_frame.h"
@@ -39,6 +40,15 @@ static const WaveformInfo waveform_info[] = {
         .buffer_size = LF_CAPTURE_COUNT,
         .capture = capture_lf,
     },
+    [WaveformHf] = {
+        .title = "HF Plot",
+        .description = "ISO 14443A poll",
+        .directory = APP_DATA_PATH("hf-captures"),
+        .prefix = "HF",
+        .count = HF_WAVEFORM_COUNT,
+        .buffer_size = HF_WAVEFORM_COUNT,
+        .capture = hf_waveform_capture,
+    },
 };
 
 typedef enum {
@@ -48,6 +58,7 @@ typedef enum {
     CaptureSaving,
     CaptureReady,
     CaptureReadFailed,
+    CaptureIncomplete,
     CaptureRestoreFailed,
     CaptureOpenFailed,
 } CaptureState;
@@ -208,6 +219,10 @@ static void capture_draw(Canvas* canvas, void* context) {
         canvas_draw_str(canvas, 4, 30, "Capture failed");
         elements_button_center(canvas, "Retry");
         break;
+    case CaptureIncomplete:
+        canvas_draw_str(canvas, 4, 30, "Capture incomplete");
+        elements_button_center(canvas, "Retry");
+        break;
     case CaptureRestoreFailed:
         canvas_draw_str(canvas, 4, 27, "LF settings may have");
         canvas_draw_str(canvas, 4, 40, "changed. Check on PM5.");
@@ -241,6 +256,8 @@ static int32_t capture_worker(void* context) {
             state = CaptureReady;
         } else if(status == LfCaptureRestoreFailed) {
             state = CaptureRestoreFailed;
+        } else if(info->capture == hf_waveform_capture && status == PM3_EPARTIAL) {
+            state = CaptureIncomplete;
         } else {
             state = CaptureReadFailed;
         }
@@ -304,7 +321,9 @@ static bool capture_input(InputEvent* event, void* context) {
     bool can_save = model->can_save;
     view_commit_model(page->view, false);
     if(event->key != InputKeyOk || event->type != InputTypeShort) return false;
-    if(state == CaptureIdle || state == CaptureReadFailed) start_job(page, CaptureReading);
+    if(state == CaptureIdle || state == CaptureReadFailed || state == CaptureIncomplete) {
+        start_job(page, CaptureReading);
+    }
     if(state == CaptureReady && can_save) start_job(page, CaptureSaving);
     return true;
 }

@@ -69,6 +69,15 @@ static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
             view_dispatcher_switch_to_view(app->view_dispatcher, WaveformViewId);
         }
         return true;
+    case OperateCaptureHf:
+        waveform_page_reset(app->waveform_page, WaveformHf, CaptureMenuViewId);
+        view_dispatcher_switch_to_view(app->view_dispatcher, WaveformViewId);
+        return true;
+    case OperateBrowseHf:
+        if(waveform_page_browse(app->waveform_page, WaveformHf, SavedMenuViewId)) {
+            view_dispatcher_switch_to_view(app->view_dispatcher, WaveformViewId);
+        }
+        return true;
     case OperateOpenCapture:
         view_dispatcher_switch_to_view(app->view_dispatcher, CaptureMenuViewId);
         return true;
