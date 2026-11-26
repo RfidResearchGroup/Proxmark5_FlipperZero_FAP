@@ -38,7 +38,8 @@ static int status_test_send_and_wait(
 int status_test_capabilities_fetch(
     volatile bool* cancel_requested,
     char lines[STATUS_PAGE_MAX_LINES][STATUS_PAGE_LINE_LEN],
-    int* out_line_count) {
+    int* out_line_count,
+    bool* bwm_compiled) {
     *out_line_count = 0;
 
     PacketResponseNG resp;
@@ -59,6 +60,7 @@ int status_test_capabilities_fetch(
 
     capabilities_t caps;
     memcpy(&caps, resp.data.asBytes, sizeof(caps));
+    *bwm_compiled = caps.compiled_with_bwm;
 
     int n = 0;
     snprintf(lines[n++], STATUS_PAGE_LINE_LEN, "PM5:   %s", caps.is_pm5 ? "yes" : "no");
@@ -76,7 +78,7 @@ int status_test_capabilities_fetch(
         caps.hw_available_smartcard ? "y" : "n");
     snprintf(lines[n++], STATUS_PAGE_LINE_LEN, "BigBuf:   %lu", (unsigned long)caps.bigbuf_size);
     snprintf(lines[n++], STATUS_PAGE_LINE_LEN, "MaxCmdData:   %u", caps.max_cmd_data_size);
-    snprintf(lines[n++], STATUS_PAGE_LINE_LEN, "Baud:   %lu", (unsigned long)caps.baudrate);
+    snprintf(lines[n++], STATUS_PAGE_LINE_LEN, "Link:   CEP / SPI");
     *out_line_count = n;
     return PM3_SUCCESS;
 }
@@ -144,32 +146,134 @@ int status_test_battery_fetch(
         return PM3_SUCCESS;
     }
 
-    static const char* const chg_status_str[] = {"idle", "pre-chg", "charging", "done"};
-    int tabs = info.temp_c10 < 0 ? -info.temp_c10 : info.temp_c10;
-
-    int n = 0;
-    snprintf(
-        lines[n++],
-        STATUS_PAGE_LINE_LEN,
-        "SoC:   %u%%   %s",
-        info.soc_pct,
-        chg_status_str[info.charge_status & 0x03]);
-    snprintf(
-        lines[n++],
-        STATUS_PAGE_LINE_LEN,
-        "V:   %umV   I:   %dmA",
-        info.voltage_mv,
-        info.current_ma);
-    snprintf(lines[n++], STATUS_PAGE_LINE_LEN, "Remain:   %umAh", info.remaining_mah);
-    snprintf(lines[n++], STATUS_PAGE_LINE_LEN, "Temp:   %d.%dC", info.temp_c10 / 10, tabs % 10);
-    if(info.full_charge_mah > 0 && n < STATUS_PAGE_MAX_LINES) {
-        snprintf(lines[n++], STATUS_PAGE_LINE_LEN, "Health:   %u%%", info.health_pct);
+    static const char* const charge_states[] = {"idle", "precharge", "charging", "full"};
+    int temp = info.temp_c10 < 0 ? -info.temp_c10 : info.temp_c10;
+    snprintf(lines[0], STATUS_PAGE_LINE_LEN, "%u%%  %s", info.soc_pct,
+             info.charge_status < sizeof(charge_states) / sizeof(charge_states[0]) ? charge_states[info.charge_status] :
+                                                           "unknown");
+    snprintf(lines[1], STATUS_PAGE_LINE_LEN, "Voltage: %u mV", info.voltage_mv);
+    snprintf(lines[2], STATUS_PAGE_LINE_LEN, "Current: %+d mA", info.current_ma);
+    snprintf(lines[3], STATUS_PAGE_LINE_LEN, "Temp: %s%d.%d C",
+             info.temp_c10 < 0 ? "-" : "", temp / 10, temp % 10);
+    snprintf(lines[4], STATUS_PAGE_LINE_LEN, "Remain: %u mAh", info.remaining_mah);
+    snprintf(lines[5], STATUS_PAGE_LINE_LEN, "Full: %u mAh", info.full_charge_mah);
+    snprintf(lines[6], STATUS_PAGE_LINE_LEN, "Design: %u mAh", info.design_cap_mah);
+    if(info.charger_fault) {
+        snprintf(lines[7], STATUS_PAGE_LINE_LEN, "Charger fault: 0x%02X", info.charger_fault);
+    } else if(info.full_charge_mah) {
+        snprintf(lines[7], STATUS_PAGE_LINE_LEN, "Health: %u%%", info.health_pct);
+    } else {
+        snprintf(lines[7], STATUS_PAGE_LINE_LEN, "Health unavailable");
     }
-    if(info.charger_fault != 0 && n < STATUS_PAGE_MAX_LINES) {
-        snprintf(lines[n++], STATUS_PAGE_LINE_LEN, "Fault:   0x%02X", info.charger_fault);
-    }
-    *out_line_count = n;
+    *out_line_count = 8;
     return PM3_SUCCESS;
+}
+
+int status_test_wifi_fetch(
+    volatile bool* cancel_requested,
+    char rows[STATUS_PAGE_ROWS_PER_PAGE][STATUS_PAGE_LINE_LEN]) {
+    uint8_t action = BWM_WIFI_ACTION_STATUS;
+    PacketResponseNG resp;
+    int result = status_test_send_and_wait(
+        CMD_PM5_BWM_WIFI, &action, sizeof(action), &resp, 4500, cancel_requested);
+
+    const char* state = "No reply";
+    if(result == PM3_EIO) {
+        state = "Send failed";
+    } else if(result == PM3_SUCCESS) {
+        result = resp.status;
+        if(resp.status == PM3_ENOTIMPL) {
+            state = "Unavailable";
+        } else if(resp.status != PM3_SUCCESS) {
+            state = "BWM no reply";
+        } else if(resp.length != 5) {
+            state = "Invalid reply";
+            result = PM3_ESOFT;
+        } else {
+            const uint8_t* data = resp.data.asBytes;
+            switch(data[0]) {
+            case BWM_WIFI_STATE_DISCONNECTED:
+                state = "Disconnected";
+                break;
+            case BWM_WIFI_STATE_CONNECTING:
+                state = "Connecting";
+                break;
+            case BWM_WIFI_STATE_CONNECTED:
+                state = "Connected";
+                if(data[1] || data[2] || data[3] || data[4]) {
+                    snprintf(rows[1], STATUS_PAGE_LINE_LEN, "IP: %u.%u.%u.%u",
+                             data[1], data[2], data[3], data[4]);
+                } else {
+                    snprintf(rows[1], STATUS_PAGE_LINE_LEN, "IP unavailable");
+                }
+                break;
+            case BWM_WIFI_STATE_RECONNECT:
+                state = "Reconnecting";
+                break;
+            case BWM_WIFI_STATE_OFF:
+            case BWM_WIFI_STATE_STOPPED:
+                state = "Off";
+                break;
+            default:
+                state = "Unknown";
+                break;
+            }
+        }
+    }
+    snprintf(rows[0], STATUS_PAGE_LINE_LEN, "%s", state);
+    return result;
+}
+
+void status_test_ble_fetch(
+    volatile bool* cancel_requested,
+    char rows[STATUS_PAGE_ROWS_PER_PAGE][STATUS_PAGE_LINE_LEN]) {
+    uint8_t action = BWM_BLE_ACTION_STATUS;
+    PacketResponseNG reply;
+    int result = status_test_send_and_wait(
+        CMD_PM5_BWM_BLE, &action, sizeof(action), &reply, 8000, cancel_requested);
+    if(result != PM3_SUCCESS) {
+        snprintf(rows[0], STATUS_PAGE_LINE_LEN, "%s",
+                 result == PM3_EIO ? "Send failed" : "No reply");
+        return;
+    }
+    if(reply.status != PM3_SUCCESS || reply.length < sizeof(bwm_ble_status_t)) {
+        const char* message = "BWM no reply";
+        if(reply.status == PM3_ENOTIMPL) {
+            message = "Unavailable";
+        } else if(reply.status == PM3_SUCCESS) {
+            message = "Invalid reply";
+        }
+        snprintf(rows[0], STATUS_PAGE_LINE_LEN, "%s", message);
+        return;
+    }
+
+    const bwm_ble_status_t* status = (const bwm_ble_status_t*)reply.data.asBytes;
+    static const char* const states[] = {"Off", "Advertising", "Connected"};
+    const char* state = "Unknown";
+    if(status->enabled == 0) {
+        state = "Off";
+    } else if(status->state == 0 && status->enabled == 1) {
+        state = "On, inactive";
+    } else if(status->state < COUNT_OF(states)) {
+        state = states[status->state];
+    }
+    snprintf(rows[0], STATUS_PAGE_LINE_LEN, "BLE: %s", state);
+    if(status->name[0]) {
+        snprintf(rows[1], STATUS_PAGE_LINE_LEN, "Name: %.*s",
+                 (int)sizeof(status->name), status->name);
+    } else {
+        snprintf(rows[1], STATUS_PAGE_LINE_LEN, "Name unavailable");
+    }
+
+    static const char* const pairing[] = {"Not required", "Required"};
+    snprintf(rows[2], STATUS_PAGE_LINE_LEN, "Pairing: %s",
+             status->bonding < COUNT_OF(pairing) ? pairing[status->bonding] : "Unknown");
+    if(status->bonded_count <= BWM_BLE_BONDED_MAX) {
+        snprintf(rows[3], STATUS_PAGE_LINE_LEN, "Bonded devices: %u%s", status->bonded_count,
+                 status->bonded_count == BWM_BLE_BONDED_MAX ? "+" : "");
+    } else {
+        snprintf(rows[3], STATUS_PAGE_LINE_LEN, "Bonded devices: Unknown");
+    }
 }
 
 int status_test_cep_fetch(
