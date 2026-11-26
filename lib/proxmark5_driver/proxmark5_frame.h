@@ -27,6 +27,10 @@ bool proxmark5_frame_handle_packet(uint8_t* packet, size_t packet_len);
 // Pop one cached response. Returns false if cache is empty.
 bool proxmark5_frame_pop(PacketResponseNG* packet);
 
+// Collect offset-prefixed data frames while the caller owns the link.
+void proxmark5_frame_collect_download(uint16_t cmd, uint8_t* data, size_t capacity);
+int proxmark5_frame_finish_download(size_t* length);
+
 // Public FIFO get interface for cached responses.
 bool proxmark5_frame_get_response(PacketResponseNG* packet);
 
