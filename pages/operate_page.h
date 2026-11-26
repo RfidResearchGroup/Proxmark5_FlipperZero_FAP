@@ -8,6 +8,7 @@ typedef enum {
     OperateReadHitag2,
     OperateReadHf14a,
     OperateOpenStatus,
+    OperateOpenAntennaCheck,
 } OperateAction;
 
 typedef struct {
