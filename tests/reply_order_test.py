@@ -270,8 +270,8 @@ int main(void) {
     setup();
     uint8_t first[RANGE_SIZE], second[RANGE_SIZE];
     proxmark5_frame_begin_operation(NULL);
-    assert(bigbuf_download_range(first, 0, RANGE_SIZE, RANGE_SIZE) == PM3_SUCCESS);
-    assert(bigbuf_download_range(second, RANGE_SIZE, RANGE_SIZE, RANGE_SIZE) == PM3_SUCCESS);
+    assert(bigbuf_download_range(first, 0, RANGE_SIZE, RANGE_SIZE, NULL) == PM3_SUCCESS);
+    assert(bigbuf_download_range(second, RANGE_SIZE, RANGE_SIZE, RANGE_SIZE, NULL) == PM3_SUCCESS);
     proxmark5_frame_end_operation();
     assert(first[0] == 'A' && second[0] == 'B' && second[RANGE_SIZE - 1] == 'B');
     assert(range_head == range_count && pings == 1);
@@ -356,7 +356,7 @@ source = (ROOT / "pages/read_hf14a_page.c").read_text()
 reader = source[source.index("static int read_hf14a_test("):source.index("static void format_uid_hex(")]
 bigbuf = (ROOT / "readers/bigbuf.c").read_text()
 range_header = bigbuf[bigbuf.index("#define BIGBUF_REPLY_TIMEOUT_MS"):bigbuf.index("static int bigbuf_reply_limit")]
-range_reader = bigbuf[bigbuf.index("static int bigbuf_receive_range"):bigbuf.index("\nint bigbuf_download(")]
+range_reader = bigbuf[bigbuf.index("static int bigbuf_receive_range"):bigbuf.index("\nint bigbuf_download_with_trace_length(")]
 with tempfile.TemporaryDirectory(prefix="pm5-reply-order-") as directory:
     temp = Path(directory)
     (temp / "furi_hal.h").write_text(HAL)

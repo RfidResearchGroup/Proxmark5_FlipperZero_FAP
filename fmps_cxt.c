@@ -87,6 +87,15 @@ static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
     case OperateBrowseEm4100:
         saved_em4100_browse();
         return true;
+    case OperateCaptureHfTrace:
+        hf14a_trace_page_start(app->hf14a_trace_page, CaptureMenuViewId);
+        view_dispatcher_switch_to_view(app->view_dispatcher, Hf14aTraceViewId);
+        return true;
+    case OperateBrowseHfTrace:
+        if(hf14a_trace_page_browse(app->hf14a_trace_page, SavedMenuViewId)) {
+            view_dispatcher_switch_to_view(app->view_dispatcher, Hf14aTraceViewId);
+        }
+        return true;
     case OperateBrowseTagReads:
         if(saved_tag_read_browse(app->saved_tag_text)) {
             text_box_reset(app->saved_tag_view);
@@ -222,6 +231,11 @@ Proxmark5App* proxmark5_app_alloc() {
     view_set_previous_callback(waveform_page_view, waveform_page_previous);
     view_dispatcher_add_view(app->view_dispatcher, WaveformViewId, waveform_page_view);
 
+    app->hf14a_trace_page = hf14a_trace_page_create();
+    View* trace_view = hf14a_trace_page_view(app->hf14a_trace_page);
+    view_set_previous_callback(trace_view, hf14a_trace_page_previous);
+    view_dispatcher_add_view(app->view_dispatcher, Hf14aTraceViewId, trace_view);
+
     // Create and add ReadHitag2 page to the view dispatcher
     // The left "Back" button returns to the functions menu, same destination as the
     // hardware back button below.
@@ -281,10 +295,13 @@ void proxmark5_app_free(Proxmark5App* app) {
     antenna_check_page_stop_worker(app->antenna_check_page);
     live_voltage_page_stop_worker(app->live_voltage_page);
     waveform_page_wait(app->waveform_page);
+    hf14a_trace_page_wait(app->hf14a_trace_page);
     simple_reader_page_stop_worker(app->simple_reader_page);
 
     view_dispatcher_remove_view(app->view_dispatcher, WaveformViewId);
     waveform_page_free(app->waveform_page);
+    view_dispatcher_remove_view(app->view_dispatcher, Hf14aTraceViewId);
+    hf14a_trace_page_free(app->hf14a_trace_page);
     view_dispatcher_remove_view(app->view_dispatcher, SimpleReaderPageViewId);
     simple_reader_page_free(app->simple_reader_page);
     view_dispatcher_remove_view(app->view_dispatcher, SavedTagReadViewId);
