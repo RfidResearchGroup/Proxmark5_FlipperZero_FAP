@@ -17,42 +17,30 @@ static bool fmps_cxt_back_event_callback(void* context) {
 
 static void fmps_cxt_open_operate_page(void* context) {
     Proxmark5App* app = context;
-    view_dispatcher_send_custom_event(app->view_dispatcher, Proxmark5CustomEventOpenOperatePage);
+    view_dispatcher_send_custom_event(app->view_dispatcher, OperateOpenMenu);
 }
 
-static void fmps_cxt_open_read_hitag2_page(void* context) {
+static void fmps_cxt_menu_selected(void* context, uint32_t action) {
     Proxmark5App* app = context;
-    view_dispatcher_send_custom_event(
-        app->view_dispatcher, Proxmark5CustomEventOpenReadHitag2Page);
-}
-
-static void fmps_cxt_open_read_hf14a_page(void* context) {
-    Proxmark5App* app = context;
-    view_dispatcher_send_custom_event(
-        app->view_dispatcher, Proxmark5CustomEventOpenReadHf14aPage);
-}
-
-static void fmps_cxt_open_status_page(void* context) {
-    Proxmark5App* app = context;
-    view_dispatcher_send_custom_event(app->view_dispatcher, Proxmark5CustomEventOpenStatusPage);
+    view_dispatcher_send_custom_event(app->view_dispatcher, action);
 }
 
 static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
     Proxmark5App* app = context;
 
     switch(event) {
-    case Proxmark5CustomEventOpenOperatePage:
+    case OperateOpenMenu:
         view_dispatcher_switch_to_view(app->view_dispatcher, OperatePageViewId);
         return true;
-    case Proxmark5CustomEventOpenReadHitag2Page:
+    case OperateReadHitag2:
         view_dispatcher_switch_to_view(app->view_dispatcher, ReadHitag2PageViewId);
         read_hitag2_page_start(app->read_hitag2_page);
         return true;
-    case Proxmark5CustomEventOpenReadHf14aPage:
+    case OperateReadHf14a:
         view_dispatcher_switch_to_view(app->view_dispatcher, ReadHf14aPageViewId);
         read_hf14a_page_start(app->read_hf14a_page);
         return true;
-    case Proxmark5CustomEventOpenStatusPage:
+    case OperateOpenStatus:
         view_dispatcher_switch_to_view(app->view_dispatcher, StatusPageViewId);
         status_page_start(app->status_page);
         return true;
@@ -106,13 +94,7 @@ Proxmark5App* proxmark5_app_alloc() {
     view_dispatcher_add_view(app->view_dispatcher, MainPageViewId, app->main_page->canvas_view);
 
     // Create and add the operate submenu page to the view dispatcher
-    app->operate_page = operate_page_create(
-        fmps_cxt_open_read_hitag2_page,
-        app,
-        fmps_cxt_open_read_hf14a_page,
-        app,
-        fmps_cxt_open_status_page,
-        app);
+    app->operate_page = operate_page_create(fmps_cxt_menu_selected, app);
     view_set_previous_callback(
         submenu_get_view(app->operate_page->submenu), operate_page_previous_callback);
     view_dispatcher_add_view(

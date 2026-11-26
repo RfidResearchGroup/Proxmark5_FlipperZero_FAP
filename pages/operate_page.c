@@ -1,92 +1,18 @@
 #include <furi.h>
 #include "operate_page.h"
 
-typedef enum {
-    OperateSubmenuIndexReadHitag2 = 0,
-    OperateSubmenuIndexHf14a,
-    OperateSubmenuIndexStatus,
-} OperateSubmenuIndex;
-
-static void operate_page_submenu_callback(void* context, uint32_t index) {
-    OperatePage* operate_page = context;
-    if(!operate_page) {
-        return;
-    }
-
-    switch(index) {
-    case OperateSubmenuIndexReadHitag2:
-        if(operate_page->open_read_hitag2_callback) {
-            operate_page->open_read_hitag2_callback(
-                operate_page->open_read_hitag2_callback_context);
-        }
-        break;
-    case OperateSubmenuIndexHf14a:
-        if(operate_page->open_hf14a_callback) {
-            operate_page->open_hf14a_callback(operate_page->open_hf14a_callback_context);
-        }
-        break;
-    case OperateSubmenuIndexStatus:
-        if(operate_page->open_status_callback) {
-            operate_page->open_status_callback(operate_page->open_status_callback_context);
-        }
-        break;
-    default:
-        break;
-    }
-}
-
-OperatePage* operate_page_create(
-    OperatePageReadHitag2Callback open_read_hitag2_callback,
-    void* open_read_hitag2_callback_context,
-    OperatePageOpenHf14aCallback open_hf14a_callback,
-    void* open_hf14a_callback_context,
-    OperatePageOpenStatusCallback open_status_callback,
-    void* open_status_callback_context) {
-    OperatePage* operate_page = calloc(1, sizeof(OperatePage));
-    if(!operate_page) {
-        return NULL;
-    }
-
-    operate_page->open_read_hitag2_callback = open_read_hitag2_callback;
-    operate_page->open_read_hitag2_callback_context = open_read_hitag2_callback_context;
-    operate_page->open_hf14a_callback = open_hf14a_callback;
-    operate_page->open_hf14a_callback_context = open_hf14a_callback_context;
-    operate_page->open_status_callback = open_status_callback;
-    operate_page->open_status_callback_context = open_status_callback_context;
-
+OperatePage* operate_page_create(SubmenuItemCallback callback, void* context) {
+    OperatePage* operate_page = malloc(sizeof(OperatePage));
     operate_page->submenu = submenu_alloc();
-    submenu_set_header(operate_page->submenu, "Functions Menu");
-    submenu_add_item(
-        operate_page->submenu,
-        "ReadHitag2",
-        OperateSubmenuIndexReadHitag2,
-        operate_page_submenu_callback,
-        operate_page);
-    submenu_add_item(
-        operate_page->submenu,
-        "HF 14a Reader",
-        OperateSubmenuIndexHf14a,
-        operate_page_submenu_callback,
-        operate_page);
-    submenu_add_item(
-        operate_page->submenu,
-        "Hardware Status",
-        OperateSubmenuIndexStatus,
-        operate_page_submenu_callback,
-        operate_page);
-
+    Submenu* menu = operate_page->submenu;
+    submenu_set_header(menu, "Functions Menu");
+    submenu_add_item(menu, "HF 14a Reader", OperateReadHf14a, callback, context);
+    submenu_add_item(menu, "Hitag2 Reader", OperateReadHitag2, callback, context);
+    submenu_add_item(menu, "Hardware Status", OperateOpenStatus, callback, context);
     return operate_page;
 }
 
 void operate_page_free(OperatePage* operate_page) {
-    if(!operate_page) {
-        return;
-    }
-
-    if(operate_page->submenu) {
-        submenu_free(operate_page->submenu);
-        operate_page->submenu = NULL;
-    }
-
+    submenu_free(operate_page->submenu);
     free(operate_page);
 }

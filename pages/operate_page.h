@@ -3,28 +3,18 @@
 
 #include <gui/modules/submenu.h>
 
-typedef void (*OperatePageReadHitag2Callback)(void* context);
-typedef void (*OperatePageOpenHf14aCallback)(void* context);
-typedef void (*OperatePageOpenStatusCallback)(void* context);
+typedef enum {
+    OperateOpenMenu,
+    OperateReadHitag2,
+    OperateReadHf14a,
+    OperateOpenStatus,
+} OperateAction;
 
 typedef struct {
     Submenu* submenu;
-
-    OperatePageReadHitag2Callback open_read_hitag2_callback;
-    void* open_read_hitag2_callback_context;
-    OperatePageOpenHf14aCallback open_hf14a_callback;
-    void* open_hf14a_callback_context;
-    OperatePageOpenStatusCallback open_status_callback;
-    void* open_status_callback_context;
 } OperatePage;
 
-OperatePage* operate_page_create(
-    OperatePageReadHitag2Callback open_read_hitag2_callback,
-    void* open_read_hitag2_callback_context,
-    OperatePageOpenHf14aCallback open_hf14a_callback,
-    void* open_hf14a_callback_context,
-    OperatePageOpenStatusCallback open_status_callback,
-    void* open_status_callback_context);
+OperatePage* operate_page_create(SubmenuItemCallback callback, void* context);
 void operate_page_free(OperatePage* operate_page);
 
 #endif // OPERATE_PAGE_H
