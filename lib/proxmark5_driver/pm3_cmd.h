@@ -1110,17 +1110,7 @@ typedef struct {
 
 #define START_FLASH_MAGIC 0x54494f44 // 'DOIT'
 
-// --- PM5-only additions, not present in upstream official PM3 ------------------
-// Vendored from RfidResearchGroup/proxmark3 include/pmflash.h + include/pm3_cmd.h.
-// Re-check against those files if either command's reply shape ever changes.
-
-// Reply to CMD_FLASHMEM_GET_INFO.
-typedef struct {
-    uint8_t  manufacturer_id;
-    uint8_t  device_id;
-    uint16_t jedec_id;
-    uint8_t  pages64k;
-} PACKED spi_flash_t;
+// PM5 commands and replies from proxmark3 include/pm3_cmd.h.
 
 // PM5, read compact BWM battery telemetry - see include/pm3_cmd.h in the
 // proxmark3-RRG repo for the authoritative definition.

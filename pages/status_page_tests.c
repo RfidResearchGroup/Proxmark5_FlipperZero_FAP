@@ -4,10 +4,12 @@
 #include "proxmark5_frame.h"
 #include "pm3_cmd.h"
 
-// One retry on a bare timeout, never on cancel. Retry uses a short 500ms
-// window, not the full timeout - real replies land in 10-30ms, so a
-// resend that hasn't answered by then isn't going to.
-#define STATUS_TEST_RETRY_TIMEOUT_MS 500
+// Back off between retries of read-only commands. Keep the full reply
+// window after the last send so a late reply can still arrive.
+#define STATUS_TEST_RETRY_AFTER_MS 250U
+#define STATUS_TEST_QUICK_TIMEOUT_MS 500
+// Back-to-back status requests can drop replies on CEP.
+#define STATUS_TEST_REQUEST_GAP_MS 50
 
 static int status_test_send_and_wait(
     uint16_t cmd,
@@ -16,17 +18,19 @@ static int status_test_send_and_wait(
     PacketResponseNG* resp,
     uint32_t timeout_ms,
     volatile bool* cancel_requested) {
-    for(int attempt = 0; attempt < 2; attempt++) {
-        clearCommandBuffer();
+    // Long BWM requests can still be working when the retry is sent.
+    int attempts = timeout_ms == STATUS_TEST_QUICK_TIMEOUT_MS ? 3 : 2;
+    for(int attempt = 0; attempt < attempts; attempt++) {
+        furi_delay_ms(STATUS_TEST_REQUEST_GAP_MS);
         if(cancel_requested && *cancel_requested) {
             return PM3_EOPABORTED;
         }
+        if(attempt == 0) clearCommandBuffer();
         if(!SendCommandNG(cmd, payload, payload_len)) return PM3_EIO;
-        uint32_t wait_ms = attempt == 0 ? timeout_ms : STATUS_TEST_RETRY_TIMEOUT_MS;
+        uint32_t wait_ms =
+            attempt + 1 < attempts ? (STATUS_TEST_RETRY_AFTER_MS << attempt) : timeout_ms;
         int result = proxmark5_frame_wait(cmd, resp, wait_ms, cancel_requested);
-        if(result != PM3_ETIMEOUT) {
-            return result;
-        }
+        if(result != PM3_ETIMEOUT) return result;
     }
     return PM3_ETIMEOUT;
 }
@@ -38,8 +42,8 @@ int status_test_capabilities_fetch(
     *out_line_count = 0;
 
     PacketResponseNG resp;
-    int wait_result =
-        status_test_send_and_wait(CMD_CAPABILITIES, NULL, 0, &resp, 2000, cancel_requested);
+    int wait_result = status_test_send_and_wait(
+        CMD_CAPABILITIES, NULL, 0, &resp, STATUS_TEST_QUICK_TIMEOUT_MS, cancel_requested);
     if(wait_result != PM3_SUCCESS) {
         return wait_result;
     }
@@ -77,128 +81,57 @@ int status_test_capabilities_fetch(
     return PM3_SUCCESS;
 }
 
-int status_test_ping_fetch(
-    volatile bool* cancel_requested,
-    char lines[STATUS_PAGE_MAX_LINES][STATUS_PAGE_LINE_LEN],
-    int* out_line_count) {
-    *out_line_count = 0;
-
-    uint8_t payload[8];
-    for(size_t i = 0; i < sizeof(payload); i++) {
-        payload[i] = (uint8_t)(i * 0x11 + 1); // arbitrary distinct pattern
-    }
-
-    uint32_t start = furi_get_tick();
-    PacketResponseNG resp;
-    int wait_result = status_test_send_and_wait(
-        CMD_PING, payload, sizeof(payload), &resp, 2000, cancel_requested);
-    uint32_t rtt_ms = furi_get_tick() - start;
-    if(wait_result != PM3_SUCCESS) {
-        return wait_result;
-    }
-
-    bool match = (resp.status == PM3_SUCCESS) && (resp.length == sizeof(payload)) &&
-                 (memcmp(resp.data.asBytes, payload, sizeof(payload)) == 0);
-
-    int n = 0;
-    snprintf(lines[n++], STATUS_PAGE_LINE_LEN, "Sent:   %u bytes", (unsigned)sizeof(payload));
-    snprintf(lines[n++], STATUS_PAGE_LINE_LEN, "Echo:   %s", match ? "OK" : "MISMATCH");
-    snprintf(lines[n++], STATUS_PAGE_LINE_LEN, "RTT:   %lums", (unsigned long)rtt_ms);
-    *out_line_count = n;
-    return match ? PM3_SUCCESS : PM3_ESOFT;
+bool status_test_ping_fetch(uint32_t* rtt_ms) {
+    furi_delay_ms(STATUS_TEST_REQUEST_GAP_MS);
+    return proxmark5_frame_echo(rtt_ms);
 }
 
-int status_test_flash_chip_fetch(
+void status_test_chip_id_fetch(
     volatile bool* cancel_requested,
-    char lines[STATUS_PAGE_MAX_LINES][STATUS_PAGE_LINE_LEN],
-    int* out_line_count) {
-    int n = 0;
+    char row[STATUS_PAGE_LINE_LEN]) {
     PacketResponseNG resp;
-
-    if(cancel_requested && *cancel_requested) {
-        *out_line_count = n;
-        return PM3_EOPABORTED;
-    }
-    if(status_test_send_and_wait(CMD_FLASHMEM_GET_INFO, NULL, 0, &resp, 1500, cancel_requested) ==
-           PM3_SUCCESS &&
-       resp.status == PM3_SUCCESS && resp.length >= sizeof(spi_flash_t)) {
-        spi_flash_t info;
-        memcpy(&info, resp.data.asBytes, sizeof(info));
-        snprintf(
-            lines[n++],
-            STATUS_PAGE_LINE_LEN,
-            "Flash %02X/%02X J:%04X",
-            info.manufacturer_id,
-            info.device_id,
-            info.jedec_id);
-        snprintf(lines[n++], STATUS_PAGE_LINE_LEN, "Size:   %u*64K", info.pages64k);
-    } else {
-        snprintf(lines[n++], STATUS_PAGE_LINE_LEN, "Flash: N/A");
-    }
-
-    if(cancel_requested && *cancel_requested) {
-        *out_line_count = n;
-        return PM3_EOPABORTED;
-    }
-    if(status_test_send_and_wait(CMD_FLASHMEM_GET_ID, NULL, 0, &resp, 1500, cancel_requested) ==
-           PM3_SUCCESS &&
-       resp.status == PM3_SUCCESS && resp.length >= sizeof(uint64_t) &&
-       n < STATUS_PAGE_MAX_LINES) {
-        uint64_t uid = 0;
-        memcpy(&uid, resp.data.asBytes, sizeof(uid));
-        snprintf(
-            lines[n++],
-            STATUS_PAGE_LINE_LEN,
-            "FlashUID: %08lX%08lX",
-            (unsigned long)(uid >> 32),
-            (unsigned long)(uid & 0xFFFFFFFFu));
-    }
-
-    if(cancel_requested && *cancel_requested) {
-        *out_line_count = n;
-        return PM3_EOPABORTED;
-    }
     if(status_test_send_and_wait(
-           CMD_MAIN_CHIP_UNIQUEID, NULL, 0, &resp, 1500, cancel_requested) == PM3_SUCCESS &&
-       resp.status == PM3_SUCCESS && resp.length > 0 && n < STATUS_PAGE_MAX_LINES) {
-        char hex[24] = {0};
-        int hn = 0;
-        for(int i = 0; i < resp.length && hn < (int)sizeof(hex) - 3; i++) {
-            hn += snprintf(hex + hn, sizeof(hex) - hn, "%02X", resp.data.asBytes[i]);
-        }
-        snprintf(lines[n++], STATUS_PAGE_LINE_LEN, "ChipID:   %s", hex);
-    } else if(n < STATUS_PAGE_MAX_LINES) {
-        snprintf(lines[n++], STATUS_PAGE_LINE_LEN, "ChipID:   N/A");
+           CMD_MAIN_CHIP_UNIQUEID, NULL, 0, &resp, STATUS_TEST_QUICK_TIMEOUT_MS,
+           cancel_requested) != PM3_SUCCESS ||
+       resp.status != PM3_SUCCESS || resp.length == 0) {
+        snprintf(row, STATUS_PAGE_LINE_LEN, "ChipID: N/A");
+        return;
     }
 
-    *out_line_count = n;
-    return PM3_SUCCESS; // partial results still count as a completed test run
+    char hex[24] = {0};
+    size_t bytes = MIN(resp.length, (sizeof(hex) - 1) / 2);
+    for(size_t i = 0; i < bytes; i++) {
+        snprintf(hex + 2 * i, 3, "%02X", resp.data.asBytes[i]);
+    }
+    snprintf(row, STATUS_PAGE_LINE_LEN, "ChipID:   %s", hex);
 }
 
 int status_test_battery_fetch(
     volatile bool* cancel_requested,
+    const bwm_battery_info_t* snapshot,
     char lines[STATUS_PAGE_MAX_LINES][STATUS_PAGE_LINE_LEN],
     int* out_line_count) {
     *out_line_count = 0;
 
-    PacketResponseNG resp;
-    int wait_result = status_test_send_and_wait(
-        CMD_PM5_BWM_GET_BATTERY, NULL, 0, &resp, 2000, cancel_requested);
-    if(wait_result != PM3_SUCCESS) {
-        // Most likely an older PM5 build without this command at all.
-        snprintf(lines[0], STATUS_PAGE_LINE_LEN, "N/A (no reply)");
-        *out_line_count = 1;
-        return wait_result;
-    }
-
-    if(resp.status != PM3_SUCCESS || resp.length < sizeof(bwm_battery_info_t)) {
-        snprintf(lines[0], STATUS_PAGE_LINE_LEN, "N/A (bad reply)");
-        *out_line_count = 1;
-        return PM3_ESOFT;
-    }
-
     bwm_battery_info_t info;
-    memcpy(&info, resp.data.asBytes, sizeof(info));
+    if(snapshot) {
+        info = *snapshot;
+    } else {
+        PacketResponseNG resp;
+        int wait_result = status_test_send_and_wait(
+            CMD_PM5_BWM_GET_BATTERY, NULL, 0, &resp, 2000, cancel_requested);
+        if(wait_result != PM3_SUCCESS) {
+            snprintf(lines[0], STATUS_PAGE_LINE_LEN, "N/A (no reply)");
+            *out_line_count = 1;
+            return wait_result;
+        }
+        if(resp.status != PM3_SUCCESS || resp.length < sizeof(info)) {
+            snprintf(lines[0], STATUS_PAGE_LINE_LEN, "N/A (bad reply)");
+            *out_line_count = 1;
+            return PM3_ESOFT;
+        }
+        memcpy(&info, resp.data.asBytes, sizeof(info));
+    }
 
     if(!info.bwm_present) {
         snprintf(lines[0], STATUS_PAGE_LINE_LEN, "N/A (no BWM fitted)");
@@ -241,37 +174,25 @@ int status_test_battery_fetch(
 
 int status_test_cep_fetch(
     volatile bool* cancel_requested,
-    char lines[STATUS_PAGE_MAX_LINES][STATUS_PAGE_LINE_LEN],
-    int* out_line_count) {
-    *out_line_count = 0;
-
+    char rows[STATUS_PAGE_ROWS_PER_PAGE][STATUS_PAGE_LINE_LEN],
+    bwm_battery_info_t* battery) {
     PacketResponseNG resp;
-    int wait_result =
-        status_test_send_and_wait(CMD_CEP_STATUS, NULL, 0, &resp, 1000, cancel_requested);
-    if(wait_result != PM3_SUCCESS) {
-        // Most likely an older PM5 build without this command at all.
-        snprintf(lines[0], STATUS_PAGE_LINE_LEN, "N/A (no reply)");
-        *out_line_count = 1;
-        return wait_result;
+    int result = status_test_send_and_wait(
+        CMD_CEP_STATUS, NULL, 0, &resp, STATUS_TEST_QUICK_TIMEOUT_MS, cancel_requested);
+    if(result != PM3_SUCCESS) {
+        snprintf(rows[0], STATUS_PAGE_LINE_LEN, "N/A (no reply)");
+        return result;
     }
-
     if(resp.status != PM3_SUCCESS || resp.length < sizeof(cep_status_t)) {
-        snprintf(lines[0], STATUS_PAGE_LINE_LEN, "N/A (bad reply)");
-        *out_line_count = 1;
+        snprintf(rows[0], STATUS_PAGE_LINE_LEN, "N/A (bad reply)");
         return PM3_ESOFT;
     }
 
-    cep_status_t st;
-    memcpy(&st, resp.data.asBytes, sizeof(st));
-
-    int n = 0;
-    snprintf(lines[n++], STATUS_PAGE_LINE_LEN, "CEP active:   %s", st.cep_active ? "Y" : "N");
-    if(st.battery.bwm_present && st.battery.gauge_ok) {
-        snprintf(lines[n++], STATUS_PAGE_LINE_LEN, "Batt:   %u%%", st.battery.soc_pct);
-    } else {
-        snprintf(lines[n++], STATUS_PAGE_LINE_LEN, "Batt:   N/A");
-    }
-    snprintf(lines[n++], STATUS_PAGE_LINE_LEN, "FW:   %s", st.fw_version);
-    *out_line_count = n;
+    cep_status_t status;
+    memcpy(&status, resp.data.asBytes, sizeof(status));
+    *battery = status.battery;
+    snprintf(rows[0], STATUS_PAGE_LINE_LEN, "CEP active:   %s", status.cep_active ? "Y" : "N");
+    snprintf(rows[1], STATUS_PAGE_LINE_LEN, "FW:   %.*s",
+             (int)sizeof(status.fw_version), status.fw_version);
     return PM3_SUCCESS;
 }

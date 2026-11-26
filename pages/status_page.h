@@ -12,6 +12,7 @@
 typedef struct StatusPage StatusPage;
 
 StatusPage* status_page_create(void);
+void status_page_tick(StatusPage* page);
 void status_page_stop_worker(StatusPage* status_page);
 void status_page_free(StatusPage* status_page);
 

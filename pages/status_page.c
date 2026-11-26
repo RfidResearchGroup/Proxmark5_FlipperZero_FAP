@@ -121,6 +121,41 @@ static bool status_page_input_callback(InputEvent* event, void* context) {
     return false;
 }
 
+static void status_page_fill_power(
+    volatile bool* cancel,
+    const bwm_battery_info_t* battery,
+    char rows[STATUS_PAGE_ROWS_PER_PAGE][STATUS_PAGE_LINE_LEN]) {
+    char lines[STATUS_PAGE_MAX_LINES][STATUS_PAGE_LINE_LEN];
+    int count = 0;
+    status_test_battery_fetch(cancel, battery, lines, &count);
+    if(count >= 1) {
+        memcpy(rows[0], lines[0], STATUS_PAGE_LINE_LEN);
+    }
+    if(count >= 2) {
+        memcpy(rows[1], lines[1], STATUS_PAGE_LINE_LEN);
+    }
+    if(count >= 3) {
+        memcpy(rows[2], lines[2], STATUS_PAGE_LINE_LEN);
+    }
+    {
+        // Fault's index isn't fixed (Health may or may not precede it) -
+        // find it by prefix. Shown in place of Temp when present, since a
+        // real fault is more actionable than ambient temperature.
+        const char* fault_line = NULL;
+        for(int i = 4; i < count; i++) {
+            if(strncmp(lines[i], "Fault:", 6) == 0) {
+                fault_line = lines[i];
+                break;
+            }
+        }
+        if(fault_line) {
+            memcpy(rows[3], fault_line, STATUS_PAGE_LINE_LEN);
+        } else if(count >= 4) {
+            memcpy(rows[3], lines[3], STATUS_PAGE_LINE_LEN);
+        }
+    }
+}
+
 static void status_page_scan(StatusPage* status_page) {
     volatile bool* cancel = &status_page->worker_thread_cancel_requested;
     char lines[STATUS_PAGE_MAX_LINES][STATUS_PAGE_LINE_LEN];
@@ -140,8 +175,7 @@ static void status_page_scan(StatusPage* status_page) {
         return;
     }
 
-    // No reply at all means the device isn't responding - skip the other 4
-    // tests (they'd all time out too) and show one error page instead.
+    // Skip the remaining requests if the device does not answer.
     if(caps_result == PM3_ETIMEOUT || caps_result == PM3_EIO) {
         furi_thread_list_free(thread_list);
         StatusPageModel* model = view_get_model(status_page->view);
@@ -161,82 +195,39 @@ static void status_page_scan(StatusPage* status_page) {
         snprintf(rows[0][3], STATUS_PAGE_LINE_LEN, "Baud:   N/A");
     }
 
-    count = 0;
-    status_test_flash_chip_fetch(cancel, lines, &count);
+    status_test_chip_id_fetch(cancel, rows[0][1]);
     if(*cancel) {
         furi_thread_list_free(thread_list);
         return;
     }
-    // ChipID is always this fetch fn's last line, whatever its index.
-    if(count > 0) {
-        memcpy(rows[0][1], lines[count - 1], STATUS_PAGE_LINE_LEN);
+
+    bwm_battery_info_t battery;
+    int cep_result = status_test_cep_fetch(cancel, rows[2], &battery);
+    if(*cancel) {
+        furi_thread_list_free(thread_list);
+        return;
+    }
+
+    uint32_t rtt_ms;
+    bool echo_received = status_test_ping_fetch(&rtt_ms);
+    if(*cancel) {
+        furi_thread_list_free(thread_list);
+        return;
+    }
+    if(echo_received) {
+        snprintf(rows[2][2], STATUS_PAGE_LINE_LEN, "RTT:   %lums", (unsigned long)rtt_ms);
+        snprintf(rows[2][3], STATUS_PAGE_LINE_LEN, "Echo:   OK");
     } else {
-        snprintf(rows[0][1], STATUS_PAGE_LINE_LEN, "ChipID: N/A");
+        snprintf(rows[2][2], STATUS_PAGE_LINE_LEN, "RTT:   N/A");
+        snprintf(rows[2][3], STATUS_PAGE_LINE_LEN, "Echo:   N/A");
     }
 
-    count = 0;
-    status_test_battery_fetch(cancel, lines, &count);
-    if(*cancel) {
-        furi_thread_list_free(thread_list);
-        return;
-    }
-    if(count >= 1) {
-        memcpy(rows[1][0], lines[0], STATUS_PAGE_LINE_LEN);
-    }
-    if(count >= 2) {
-        memcpy(rows[1][1], lines[1], STATUS_PAGE_LINE_LEN);
-    }
-    if(count >= 3) {
-        memcpy(rows[1][2], lines[2], STATUS_PAGE_LINE_LEN);
-    }
-    {
-        // Fault's index isn't fixed (Health may or may not precede it) -
-        // find it by prefix. Shown in place of Temp when present, since a
-        // real fault is more actionable than ambient temperature.
-        const char* fault_line = NULL;
-        for(int i = 4; i < count; i++) {
-            if(strncmp(lines[i], "Fault:", 6) == 0) {
-                fault_line = lines[i];
-                break;
-            }
-        }
-        if(fault_line) {
-            memcpy(rows[1][3], fault_line, STATUS_PAGE_LINE_LEN);
-        } else if(count >= 4) {
-            memcpy(rows[1][3], lines[3], STATUS_PAGE_LINE_LEN);
-        }
-    }
-
-    count = 0;
-    status_test_ping_fetch(cancel, lines, &count);
-    if(*cancel) {
-        furi_thread_list_free(thread_list);
-        return;
-    }
-    char ping_rtt[STATUS_PAGE_LINE_LEN];
-    char ping_echo[STATUS_PAGE_LINE_LEN];
-    if(count >= 3) {
-        memcpy(ping_rtt, lines[2], STATUS_PAGE_LINE_LEN);
-        memcpy(ping_echo, lines[1], STATUS_PAGE_LINE_LEN);
+    bool battery_fallback = cep_result != PM3_SUCCESS;
+    if(battery_fallback) {
+        snprintf(rows[1][0], STATUS_PAGE_LINE_LEN, "Reading battery...");
     } else {
-        snprintf(ping_rtt, STATUS_PAGE_LINE_LEN, "RTT:   N/A");
-        snprintf(ping_echo, STATUS_PAGE_LINE_LEN, "Echo:   N/A");
+        status_page_fill_power(cancel, &battery, rows[1]);
     }
-
-    count = 0;
-    status_test_cep_fetch(cancel, lines, &count);
-    if(*cancel) {
-        furi_thread_list_free(thread_list);
-        return;
-    }
-    if(count >= 1) {
-        memcpy(rows[2][0], lines[0], STATUS_PAGE_LINE_LEN);
-    }
-    if(count >= 3) {
-        memcpy(rows[2][1], lines[2], STATUS_PAGE_LINE_LEN);
-    }
-    memcpy(rows[2][2], ping_rtt, STATUS_PAGE_LINE_LEN);
-    memcpy(rows[2][3], ping_echo, STATUS_PAGE_LINE_LEN);
 
     furi_thread_enumerate(thread_list);
     uint32_t stats_window_ms = furi_get_tick() - stats_start_tick;
@@ -264,6 +255,17 @@ static void status_page_scan(StatusPage* status_page) {
     model->current_page = 0;
     memcpy(model->rows, rows, sizeof(rows));
     view_commit_model(status_page->view, true);
+
+    if(battery_fallback) {
+        memset(rows[1], 0, sizeof(rows[1]));
+        status_page_fill_power(cancel, NULL, rows[1]);
+        if(*cancel) {
+            return;
+        }
+        model = view_get_model(status_page->view);
+        memcpy(model->rows[1], rows[1], sizeof(rows[1]));
+        view_commit_model(status_page->view, true);
+    }
 
 }
 
@@ -312,6 +314,12 @@ StatusPage* status_page_create(void) {
     view_commit_model(status_page->view, false);
 
     return status_page;
+}
+
+void status_page_tick(StatusPage* page) {
+    if(!page->worker_thread || furi_thread_get_state(page->worker_thread) != FuriThreadStateStopped) return;
+    furi_thread_free(page->worker_thread);
+    page->worker_thread = NULL;
 }
 
 void status_page_stop_worker(StatusPage* status_page) {
