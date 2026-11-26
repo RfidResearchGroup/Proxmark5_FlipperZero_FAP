@@ -20,6 +20,14 @@ typedef struct {
     uint8_t tail;
     // The SPI RX thread enqueues while worker threads take; the ring needs a lock.
     FuriMutex* mutex;
+    FuriMutex* operation_mutex;
+    const volatile bool* operation_cancel;
+    // A worker can finish with a reply still outstanding.
+    bool sync_needed;
+    bool sync_before_send;
+    uint32_t sync_epoch;
+    uint32_t sync_sequence;
+    PacketResponseNG sync_reply;
 } Proxmark5FrameContext;
 
 static Proxmark5FrameContext frame_context;
@@ -109,16 +117,6 @@ static bool proxmark5_frame_handle_ng_packet(uint8_t* packet, size_t packet_len)
         sizeof(PacketResponseNGPreamble) + payload_length + sizeof(PacketResponseNGPostamble);
     if(packet_len < expected_len) {
         return false;
-    }
-
-    // Log the data packet. +1 for snprintf's NUL terminator.
-    char* hex_array = (char*)malloc(2 * packet_len + 1);
-    if(hex_array) {
-        for(size_t i = 0; i < packet_len; i++) {
-            snprintf(hex_array + (i * 2), 2 * packet_len + 1 - (i * 2), "%02X", packet[i]);
-        }
-        FURI_LOG_I(PROXMARK5_LOG_TAG, "Packet (hex): %s", hex_array);
-        free(hex_array);
     }
 
     // Log the packet info
@@ -261,6 +259,8 @@ static bool proxmark5_frame_handle_old_packet(uint8_t* packet, size_t packet_len
 void proxmark5_frame_init(void) {
     memset(&frame_context, 0, sizeof(frame_context));
     frame_context.mutex = furi_mutex_alloc(FuriMutexTypeNormal);
+    frame_context.operation_mutex = furi_mutex_alloc(FuriMutexTypeNormal);
+    frame_context.sync_epoch = furi_get_tick();
 }
 
 void proxmark5_frame_deinit(void) {
@@ -269,6 +269,41 @@ void proxmark5_frame_deinit(void) {
         frame_context.mutex = NULL;
         furi_mutex_free(mutex);
     }
+    furi_mutex_free(frame_context.operation_mutex);
+}
+
+bool proxmark5_frame_begin_operation(const volatile bool* cancel) {
+    if(cancel) {
+        for(;;) {
+            if(*cancel) return false;
+            if(furi_mutex_acquire(frame_context.operation_mutex, 0) == FuriStatusOk) {
+                if(!*cancel) break;
+                furi_mutex_release(frame_context.operation_mutex);
+                return false;
+            }
+            furi_delay_ms(10);
+        }
+    } else {
+        furi_mutex_acquire(frame_context.operation_mutex, FuriWaitForever);
+    }
+    frame_context.operation_cancel = cancel;
+    frame_context.sync_before_send = frame_context.sync_needed;
+    return true;
+}
+
+bool proxmark5_frame_operation_cancelled(void) {
+    return frame_context.operation_cancel && *frame_context.operation_cancel;
+}
+
+const volatile bool* proxmark5_frame_set_operation_cancel(const volatile bool* cancel) {
+    const volatile bool* previous = frame_context.operation_cancel;
+    frame_context.operation_cancel = cancel;
+    return previous;
+}
+
+void proxmark5_frame_end_operation(void) {
+    frame_context.operation_cancel = NULL;
+    furi_mutex_release(frame_context.operation_mutex);
 }
 
 void proxmark5_frame_reset(void) {
@@ -363,20 +398,39 @@ bool proxmark5_frame_take_by_cmd(uint16_t cmd, PacketResponseNG* packet) {
     return found;
 }
 
-bool WaitForResponseTimeout(uint16_t cmd, PacketResponseNG* packet, uint32_t timeout_ms) {
-    uint32_t start_time = furi_get_tick();
+int proxmark5_frame_wait(
+    uint16_t cmd,
+    PacketResponseNG* packet,
+    uint32_t timeout_ms,
+    const volatile bool* cancel) {
+    const uint32_t start_time = furi_get_tick();
+    int status = PM3_ETIMEOUT;
+    proxmark5_com_set_waiting(true);
 
-    while((furi_get_tick() - start_time) < timeout_ms) {
-        if(proxmark5_frame_take_by_cmd(cmd, packet)) {
-            return true;
+    for(;;) {
+        if(cancel && *cancel) {
+            status = PM3_EOPABORTED;
+            break;
         }
+        if(proxmark5_frame_take_by_cmd(cmd, packet)) {
+            status = PM3_SUCCESS;
+            break;
+        }
+        if((furi_get_tick() - start_time) >= timeout_ms) break;
         furi_delay_ms(10);
     }
 
-    return proxmark5_frame_take_by_cmd(cmd, packet);
+    proxmark5_com_set_waiting(false);
+    if(status != PM3_SUCCESS) frame_context.sync_needed = true;
+    return status;
 }
 
-static void proxmark5_frame_send_ng_internal(uint16_t cmd, uint8_t* data, size_t len, bool ng) {
+bool WaitForResponseTimeout(uint16_t cmd, PacketResponseNG* packet, uint32_t timeout_ms) {
+    return proxmark5_frame_wait(cmd, packet, timeout_ms, frame_context.operation_cancel) ==
+           PM3_SUCCESS;
+}
+
+static bool proxmark5_frame_send_ng_internal(uint16_t cmd, uint8_t* data, size_t len, bool ng) {
     PacketCommandNGRaw tx;
     memset(&tx, 0, sizeof(tx));
 
@@ -396,7 +450,7 @@ static void proxmark5_frame_send_ng_internal(uint16_t cmd, uint8_t* data, size_t
         (PacketCommandNGPostamble*)((uint8_t*)&tx.pre + sizeof(PacketCommandNGPreamble) + len);
     tx_post->crc = COMMANDNG_POSTAMBLE_MAGIC;
 
-    (void)proxmark5_com_send_spi(
+    return proxmark5_com_send_spi(
         (uint8_t*)&tx, sizeof(PacketCommandNGPreamble) + len + sizeof(PacketCommandNGPostamble));
 }
 
@@ -423,8 +477,57 @@ void SendCommandOLD(
     (void)proxmark5_com_send_spi((uint8_t*)&tx, sizeof(tx));
 }
 
-void SendCommandNG(uint16_t cmd, uint8_t* data, size_t len) {
-    proxmark5_frame_send_ng_internal(cmd, data, len, true);
+bool SendCommandNG(uint16_t cmd, uint8_t* data, size_t len) {
+    const volatile bool* cancel = frame_context.operation_cancel;
+    if(cancel && *cancel) return false;
+    if(frame_context.sync_before_send && !proxmark5_frame_synchronize()) {
+        // A PM5 restart may have closed CEP while the earlier command was pending.
+        if((cancel && *cancel) || !proxmark5_com_handshake() ||
+           !proxmark5_frame_synchronize()) {
+            return false;
+        }
+    }
+    if(cancel && *cancel) return false;
+    bool sent = proxmark5_frame_send_ng_internal(cmd, data, len, true);
+    if(!sent) frame_context.sync_needed = true;
+    return sent;
+}
+
+bool proxmark5_frame_synchronize(void) {
+    frame_context.sync_before_send = true;
+    return proxmark5_frame_echo(NULL);
+}
+
+bool proxmark5_frame_echo(uint32_t* rtt_ms) {
+    const volatile bool* cancel = frame_context.operation_cancel;
+    frame_context.sync_needed = true;
+
+    // PM5 dispatches commands in order. A fresh echo puts earlier replies behind us.
+    for(unsigned attempt = 0; attempt < 3 && !(cancel && *cancel); attempt++) {
+        uint32_t token[] = {
+            frame_context.sync_epoch, ++frame_context.sync_sequence, furi_get_tick()};
+        clearCommandBuffer();
+        if(!proxmark5_frame_send_ng_internal(CMD_PING, (uint8_t*)token, sizeof(token), true)) {
+            continue;
+        }
+
+        PacketResponseNG* reply = &frame_context.sync_reply;
+        uint32_t started = furi_get_tick();
+        for(uint32_t elapsed = 0; elapsed < 500; elapsed = furi_get_tick() - started) {
+            if(proxmark5_frame_wait(CMD_PING, reply, 500 - elapsed, cancel) != PM3_SUCCESS) {
+                break;
+            }
+            if(reply->status == PM3_SUCCESS && reply->length == sizeof(token) &&
+               memcmp(reply->data.asBytes, token, sizeof(token)) == 0) {
+                if(rtt_ms) *rtt_ms = furi_get_tick() - token[2];
+                clearCommandBuffer();
+                frame_context.sync_needed = false;
+                frame_context.sync_before_send = false;
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 void SendCommandMIX(

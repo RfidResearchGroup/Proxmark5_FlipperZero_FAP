@@ -30,35 +30,9 @@ struct ReadHf14aPage {
     void* back_callback_context;
 };
 
-static int read_hf14a_wait_for_response_interruptible(
-    uint16_t cmd,
-    PacketResponseNG* resp,
-    uint32_t timeout_ms,
-    volatile bool* cancel_requested) {
-    uint32_t start_time = furi_get_tick();
-
-    while((furi_get_tick() - start_time) < timeout_ms) {
-        if(cancel_requested && *cancel_requested) {
-            return PM3_EOPABORTED;
-        }
-
-        if(proxmark5_frame_take_by_cmd(cmd, resp)) {
-            return PM3_SUCCESS;
-        }
-
-        furi_delay_ms(10);
-    }
-
-    if(cancel_requested && *cancel_requested) {
-        return PM3_EOPABORTED;
-    }
-
-    return proxmark5_frame_take_by_cmd(cmd, resp) ? PM3_SUCCESS : PM3_ETIMEOUT;
-}
-
 // A connect-only select is a single bounded exchange (the firmware's own
 // protocol timing bounds it, not a multi-attempt loop like Hitag2's reader),
-// so unlike read_hitag2_test() this never needs to send CMD_BREAK_LOOP.
+// so there is no need to send CMD_BREAK_LOOP.
 static int read_hf14a_test(volatile bool* cancel_requested, iso14a_card_select_t* out_card, bool* out_found) {
     if(out_found) {
         *out_found = false;
@@ -86,9 +60,12 @@ static int read_hf14a_test(volatile bool* cancel_requested, iso14a_card_select_t
         return PM3_EOPABORTED;
     }
 
-    SendCommandNG(CMD_HF_ISO14443A_READER, (uint8_t*)&cmd, sizeof(cmd));
+    if(!SendCommandNG(CMD_HF_ISO14443A_READER, (uint8_t*)&cmd, sizeof(cmd))) {
+        free(resp);
+        return cancel_requested && *cancel_requested ? PM3_EOPABORTED : PM3_EIO;
+    }
 
-    int wait_result = read_hf14a_wait_for_response_interruptible(
+    int wait_result = proxmark5_frame_wait(
         CMD_HF_ISO14443A_READER, resp, 2000, cancel_requested);
     if(wait_result != PM3_SUCCESS) {
         free(resp);
@@ -218,8 +195,12 @@ static int32_t read_hf14a_page_worker(void* context) {
 
     iso14a_card_select_t card;
     bool found = false;
-    int result =
-        read_hf14a_test(&read_hf14a_page->worker_thread_cancel_requested, &card, &found);
+    volatile bool* cancel = &read_hf14a_page->worker_thread_cancel_requested;
+    int result = PM3_EOPABORTED;
+    if(proxmark5_frame_begin_operation(cancel)) {
+        result = read_hf14a_test(cancel, &card, &found);
+        proxmark5_frame_end_operation();
+    }
 
     ReadHf14aPageModel* model = view_get_model(read_hf14a_page->view);
     if(result == PM3_SUCCESS) {

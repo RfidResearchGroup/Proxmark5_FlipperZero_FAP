@@ -8,6 +8,7 @@
 void proxmark5_com_init(void);
 void proxmark5_com_deinit(void);
 bool proxmark5_com_handshake(void);
+void proxmark5_com_set_waiting(bool waiting);
 bool proxmark5_com_send_spi(uint8_t* data, size_t length);
 
 #endif // proxmark5_COM_H

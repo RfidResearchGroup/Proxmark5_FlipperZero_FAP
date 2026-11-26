@@ -32,32 +32,6 @@ struct ReadHitag2Page {
     void* back_callback_context;
 };
 
-static int read_hitag2_wait_for_response_interruptible(
-    uint16_t cmd,
-    PacketResponseNG* resp,
-    uint32_t timeout_ms,
-    volatile bool* cancel_requested) {
-    uint32_t start_time = furi_get_tick();
-
-    while((furi_get_tick() - start_time) < timeout_ms) {
-        if(cancel_requested && *cancel_requested) {
-            return PM3_EOPABORTED;
-        }
-
-        if(proxmark5_frame_take_by_cmd(cmd, resp)) {
-            return PM3_SUCCESS;
-        }
-
-        furi_delay_ms(10);
-    }
-
-    if(cancel_requested && *cancel_requested) {
-        return PM3_EOPABORTED;
-    }
-
-    return proxmark5_frame_take_by_cmd(cmd, resp) ? PM3_SUCCESS : PM3_ETIMEOUT;
-}
-
 static const char* getHitagTypeStr(uint32_t uid) {
     //uid s/n        ********
     uint8_t type = (uid >> 4) & 0xF;
@@ -125,12 +99,16 @@ static int
         return PM3_EOPABORTED;
     }
 
-    SendCommandNG(pm3cmd, (uint8_t*)packet, sizeof(lf_hitag_data_t));
+    if(!SendCommandNG(pm3cmd, (uint8_t*)packet, sizeof(lf_hitag_data_t))) {
+            free(packet);
+            free(resp);
+            return PM3_EIO;
+        }
 
     FURI_LOG_I("ReadHitag2Page", "Waiting for Hitag2 response from Proxmark5");
 
     int wait_result =
-        read_hitag2_wait_for_response_interruptible(pm3cmd, resp, 2000, cancel_requested);
+        proxmark5_frame_wait(pm3cmd, resp, 2000, cancel_requested);
     if(wait_result != PM3_SUCCESS) {
         SendCommandNG(CMD_BREAK_LOOP, NULL, 0);
         free(packet);
@@ -268,8 +246,12 @@ static int32_t read_hitag2_page_worker(void* context) {
 
     uint32_t uid = 0;
     bool uid_valid = false;
-    int result =
-        read_hitag2_test(&read_hitag2_page->worker_thread_cancel_requested, &uid, &uid_valid);
+    volatile bool* cancel = &read_hitag2_page->worker_thread_cancel_requested;
+    int result = PM3_EOPABORTED;
+    if(proxmark5_frame_begin_operation(cancel)) {
+        result = read_hitag2_test(cancel, &uid, &uid_valid);
+        proxmark5_frame_end_operation();
+    }
 
     ReadHitag2PageModel* model = view_get_model(read_hitag2_page->view);
     model->result = result;

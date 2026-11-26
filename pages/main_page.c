@@ -4,6 +4,7 @@
 #include <gui/elements.h>
 #include "main_page.h"
 #include "proxmark5_com.h"
+#include "proxmark5_frame.h"
 
 typedef enum {
     MainPageHandshakeRunning,
@@ -106,7 +107,10 @@ static int32_t proxmark5_handshake_task(void* context) {
         }
 
         // Try to perform the proxmark5 handshake, if successful, show the success message and exit the loop
-        if(proxmark5_com_handshake()) {
+        proxmark5_frame_begin_operation(NULL);
+        bool connected = proxmark5_com_handshake();
+        proxmark5_frame_end_operation();
+        if(connected) {
             // Switch to the success state and update the view to show the success message
             model->state = MainPageShowDeviceInfo;
             view_commit_model(page->canvas_view, true);

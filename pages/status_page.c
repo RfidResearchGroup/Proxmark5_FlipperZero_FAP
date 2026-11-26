@@ -3,6 +3,7 @@
 #include <gui/elements.h>
 #include <string.h>
 #include "status_page.h"
+#include "proxmark5_frame.h"
 #include "status_page_tests.h"
 #include "pm3_cmd.h"
 
@@ -139,7 +140,7 @@ static bool status_page_worker_check_cancel(StatusPage* status_page) {
     return true;
 }
 
-static int32_t status_page_worker(void* context) {
+static int32_t status_page_scan(void* context) {
     StatusPage* status_page = context;
     if(!status_page) {
         return 0;
@@ -165,7 +166,7 @@ static int32_t status_page_worker(void* context) {
 
     // No reply at all means the device isn't responding - skip the other 4
     // tests (they'd all time out too) and show one error page instead.
-    if(caps_result == PM3_ETIMEOUT) {
+    if(caps_result == PM3_ETIMEOUT || caps_result == PM3_EIO) {
         furi_thread_list_free(thread_list);
         StatusPageModel* model = view_get_model(status_page->view);
         model->ui_state = StatusPageStateUnreachable;
@@ -286,6 +287,17 @@ static int32_t status_page_worker(void* context) {
 
     status_page->worker_thread_running = false;
     return 0;
+}
+
+static int32_t status_page_worker(void* context) {
+    StatusPage* status_page = context;
+    if(!proxmark5_frame_begin_operation(&status_page->worker_thread_cancel_requested)) {
+        status_page->worker_thread_running = false;
+        return 0;
+    }
+    int32_t result = status_page_scan(context);
+    proxmark5_frame_end_operation();
+    return result;
 }
 
 StatusPage* status_page_create(void) {

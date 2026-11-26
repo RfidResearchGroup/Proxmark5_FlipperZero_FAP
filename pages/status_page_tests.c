@@ -4,33 +4,6 @@
 #include "proxmark5_frame.h"
 #include "pm3_cmd.h"
 
-// Shared cancel-aware wait, same pattern as
-// read_hitag2_wait_for_response_interruptible() in read_hitag2_page.c -
-// deliberately not just calling the bare WaitForResponseTimeout() so every
-// test here stays cancellable via the page's Back button.
-static int status_test_wait(
-    uint16_t cmd,
-    PacketResponseNG* resp,
-    uint32_t timeout_ms,
-    volatile bool* cancel_requested) {
-    uint32_t start_time = furi_get_tick();
-
-    while((furi_get_tick() - start_time) < timeout_ms) {
-        if(cancel_requested && *cancel_requested) {
-            return PM3_EOPABORTED;
-        }
-        if(proxmark5_frame_take_by_cmd(cmd, resp)) {
-            return PM3_SUCCESS;
-        }
-        furi_delay_ms(10);
-    }
-
-    if(cancel_requested && *cancel_requested) {
-        return PM3_EOPABORTED;
-    }
-    return proxmark5_frame_take_by_cmd(cmd, resp) ? PM3_SUCCESS : PM3_ETIMEOUT;
-}
-
 // One retry on a bare timeout, never on cancel. Retry uses a short 500ms
 // window, not the full timeout - real replies land in 10-30ms, so a
 // resend that hasn't answered by then isn't going to.
@@ -48,9 +21,9 @@ static int status_test_send_and_wait(
         if(cancel_requested && *cancel_requested) {
             return PM3_EOPABORTED;
         }
-        SendCommandNG(cmd, payload, payload_len);
+        if(!SendCommandNG(cmd, payload, payload_len)) return PM3_EIO;
         uint32_t wait_ms = attempt == 0 ? timeout_ms : STATUS_TEST_RETRY_TIMEOUT_MS;
-        int result = status_test_wait(cmd, resp, wait_ms, cancel_requested);
+        int result = proxmark5_frame_wait(cmd, resp, wait_ms, cancel_requested);
         if(result != PM3_ETIMEOUT) {
             return result;
         }
