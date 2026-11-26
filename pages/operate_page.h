@@ -9,6 +9,7 @@ typedef enum {
     OperateReadHf14a,
     OperateOpenStatus,
     OperateOpenAntennaCheck,
+    OperateOpenLiveVoltage,
 } OperateAction;
 
 typedef struct {

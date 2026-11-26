@@ -47,6 +47,8 @@ struct AntennaCheckPage {
     View* view;
     FuriThread* worker;
     volatile bool cancel;
+    void (*open_live)(void*);
+    void* callback_context;
 };
 
 static void draw_voltage(Canvas* canvas, uint8_t y, const char* label, uint32_t mv) {
@@ -123,7 +125,8 @@ static void antenna_check_draw(Canvas* canvas, void* context) {
     canvas_clear(canvas);
     if(model->state == AntennaCheckReady && model->show_sweep) {
         antenna_check_draw_sweep(canvas, model);
-        elements_button_right(canvas, "Again");
+        elements_button_center(canvas, "Again");
+        elements_button_right(canvas, "Live");
         return;
     }
     canvas_set_font(canvas, FontPrimary);
@@ -132,8 +135,7 @@ static void antenna_check_draw(Canvas* canvas, void* context) {
 
     switch(model->state) {
     case AntennaCheckIdle:
-        canvas_draw_str(canvas, 3, 27, "Clear both antennas");
-        canvas_draw_str(canvas, 3, 39, "Press OK to measure");
+        canvas_draw_str(canvas, 3, 32, "Clear both antennas");
         break;
     case AntennaCheckRunning:
         canvas_draw_str(canvas, 3, 28, "Measuring LF and HF...");
@@ -157,7 +159,8 @@ static void antenna_check_draw(Canvas* canvas, void* context) {
         break;
     }
 
-    elements_button_right(canvas, model->state == AntennaCheckIdle ? "Measure" : "Again");
+    elements_button_center(canvas, model->state == AntennaCheckIdle ? "Measure" : "Again");
+    elements_button_right(canvas, "Live");
 }
 
 static int32_t antenna_check_worker(void* context) {
@@ -201,7 +204,7 @@ static bool antenna_check_input(InputEvent* event, void* context) {
     if(page->worker && furi_thread_get_state(page->worker) != FuriThreadStateStopped) {
         return event->key != InputKeyBack;
     }
-    const bool measure = event->key == InputKeyOk || event->key == InputKeyRight;
+    const bool measure = event->key == InputKeyOk;
     AntennaCheckModel* model = view_get_model(page->view);
     if(model->state == AntennaCheckReady) {
         if(event->key == InputKeyDown && !model->show_sweep) {
@@ -224,6 +227,10 @@ static bool antenna_check_input(InputEvent* event, void* context) {
     if(running) {
         return event->key != InputKeyBack;
     }
+    if(event->key == InputKeyRight) {
+        page->open_live(page->callback_context);
+        return true;
+    }
     if(!measure) {
         return false;
     }
@@ -242,24 +249,18 @@ static void antenna_check_exit(void* context) {
     page->cancel = true;
 }
 
-static void antenna_check_enter(void* context) {
-    AntennaCheckPage* page = context;
-    AntennaCheckModel* model = view_get_model(page->view);
-    if(model->state != AntennaCheckRunning) {
-        model->state = AntennaCheckIdle;
-        model->show_sweep = false;
-    }
-    view_commit_model(page->view, true);
-}
-
-AntennaCheckPage* antenna_check_page_create(void) {
+AntennaCheckPage* antenna_check_page_create(void (*open_live)(void*), void* context) {
     AntennaCheckPage* page = calloc(1, sizeof(AntennaCheckPage));
+    page->open_live = open_live;
+    page->callback_context = context;
     page->view = view_alloc();
     view_set_context(page->view, page);
     view_allocate_model(page->view, ViewModelTypeLocking, sizeof(AntennaCheckModel));
+    AntennaCheckModel* model = view_get_model(page->view);
+    *model = (AntennaCheckModel){.state = AntennaCheckIdle};
+    view_commit_model(page->view, false);
     view_set_draw_callback(page->view, antenna_check_draw);
     view_set_input_callback(page->view, antenna_check_input);
-    view_set_enter_callback(page->view, antenna_check_enter);
     view_set_exit_callback(page->view, antenna_check_exit);
     return page;
 }
