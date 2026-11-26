@@ -16,6 +16,8 @@ typedef struct {
 struct SimpleReaderPage {
     View* view;
     FuriThread* worker;
+    SimpleReaderDetailsCallback on_details;
+    void* callback_context;
     // The view model lock protects the worker state.
     const SimpleReader* next_reader;
     volatile bool cancel;
@@ -75,8 +77,13 @@ static void simple_reader_draw(Canvas* canvas, void* context) {
         break;
     }
     elements_button_center(canvas, "Read again");
-    if(model->status == PM3_SUCCESS && model->reader->save) {
-        elements_button_right(canvas, "Save");
+    if(model->status == PM3_SUCCESS) {
+        if(model->reader->format_details) {
+            elements_button_right(canvas, "Data");
+            if(model->reader->save) elements_button_left(canvas, "Save");
+        } else if(model->reader->save) {
+            elements_button_right(canvas, "Save");
+        }
     }
 }
 
@@ -154,13 +161,21 @@ void simple_reader_page_stop(SimpleReaderPage* page) {
 static bool simple_reader_input(InputEvent* event, void* context) {
     SimpleReaderPage* page = context;
     if(event->type != InputTypeShort) return false;
-    if(event->key == InputKeyRight) {
+    if(event->key == InputKeyRight || event->key == InputKeyLeft) {
         SimpleReaderModel* model = view_get_model(page->view);
         const SimpleReader* reader = model->reader;
         const uint8_t* data = !model->running && model->status == PM3_SUCCESS ? model->result.data : NULL;
         view_commit_model(page->view, false);
-        if(data && reader && reader->save) reader->save(data);
-        return true;
+        if(!data || !reader) return false;
+        if(reader->format_details && event->key == InputKeyRight) {
+            page->on_details(page->callback_context);
+            return true;
+        }
+        if(reader->save && (event->key == InputKeyRight || reader->format_details)) {
+            reader->save(data);
+            return true;
+        }
+        return false;
     }
     if(event->key != InputKeyOk) return false;
     SimpleReaderModel* model = view_get_model(page->view);
@@ -170,9 +185,20 @@ static bool simple_reader_input(InputEvent* event, void* context) {
     return true;
 }
 
-SimpleReaderPage* simple_reader_page_create(void) {
+bool simple_reader_page_format_details(SimpleReaderPage* page, FuriString* text) {
+    SimpleReaderModel* model = view_get_model(page->view);
+    bool available = !model->running && model->reader && model->result.data &&
+                     model->status == PM3_SUCCESS && model->reader->format_details;
+    if(available) model->reader->format_details(model->result.data, text);
+    view_commit_model(page->view, false);
+    return available;
+}
+
+SimpleReaderPage* simple_reader_page_create(SimpleReaderDetailsCallback on_details, void* context) {
     SimpleReaderPage* page = calloc(1, sizeof(SimpleReaderPage));
     page->view = view_alloc();
+    page->on_details = on_details;
+    page->callback_context = context;
     view_set_context(page->view, page);
     view_set_draw_callback(page->view, simple_reader_draw);
     view_set_input_callback(page->view, simple_reader_input);

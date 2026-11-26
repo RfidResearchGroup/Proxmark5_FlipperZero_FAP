@@ -44,6 +44,8 @@ static void fmps_cxt_home_selected(void* context, MainPageChoice choice) {
     fmps_cxt_menu_selected(context, actions[choice]);
 }
 
+static uint32_t saved_record_previous_callback(void* context);
+
 static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
     Proxmark5App* app = context;
 
@@ -67,6 +69,7 @@ static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
         return true;
     case OperateBrowseTagReads:
         if(saved_tag_read_browse(app->saved_tag_text)) {
+            view_set_previous_callback(text_box_get_view(app->saved_tag_view), saved_record_previous_callback);
             text_box_reset(app->saved_tag_view);
             text_box_set_text(app->saved_tag_view, furi_string_get_cstr(app->saved_tag_text));
             view_dispatcher_switch_to_view(app->view_dispatcher, SavedTagReadViewId);
@@ -148,6 +151,21 @@ static uint32_t saved_record_previous_callback(void* context) {
     return SavedMenuViewId;
 }
 
+static uint32_t reader_details_previous_callback(void* context) {
+    UNUSED(context);
+    return SimpleReaderPageViewId;
+}
+
+static void open_reader_details(void* context) {
+    Proxmark5App* app = context;
+    if(!simple_reader_page_format_details(app->simple_reader_page, app->saved_tag_text)) return;
+    text_box_reset(app->saved_tag_view);
+    text_box_set_text(app->saved_tag_view, furi_string_get_cstr(app->saved_tag_text));
+    View* details = text_box_get_view(app->saved_tag_view);
+    view_set_previous_callback(details, reader_details_previous_callback);
+    view_dispatcher_switch_to_view(app->view_dispatcher, SavedTagReadViewId);
+}
+
 static uint32_t simple_reader_previous_callback(void* context) {
     simple_reader_page_stop(context);
     return OperatePageViewId;
@@ -186,7 +204,7 @@ Proxmark5App* proxmark5_app_alloc() {
     view_set_previous_callback(saved_result, saved_record_previous_callback);
     view_dispatcher_add_view(app->view_dispatcher, SavedTagReadViewId, saved_result);
 
-    app->simple_reader_page = simple_reader_page_create();
+    app->simple_reader_page = simple_reader_page_create(open_reader_details, app);
     View* reader = simple_reader_page_get_view(app->simple_reader_page);
     view_set_previous_callback(reader, simple_reader_previous_callback);
     view_dispatcher_add_view(app->view_dispatcher, SimpleReaderPageViewId, reader);

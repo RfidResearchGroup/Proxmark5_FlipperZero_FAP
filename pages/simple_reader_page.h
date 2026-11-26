@@ -6,7 +6,10 @@
 
 typedef struct SimpleReaderPage SimpleReaderPage;
 
-SimpleReaderPage* simple_reader_page_create(void);
+typedef void (*SimpleReaderDetailsCallback)(void* context);
+
+SimpleReaderPage* simple_reader_page_create(SimpleReaderDetailsCallback on_details, void* context);
+bool simple_reader_page_format_details(SimpleReaderPage* page, FuriString* text);
 void simple_reader_page_start(SimpleReaderPage* page, const SimpleReader* reader);
 void simple_reader_page_tick(SimpleReaderPage* page);
 void simple_reader_page_stop(SimpleReaderPage* page);
