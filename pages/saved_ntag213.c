@@ -1,5 +1,6 @@
 #include <dialogs/dialogs.h>
 #include <furi.h>
+#include <flipper_format/flipper_format.h>
 #include <storage/storage.h>
 #include "saved_ntag213.h"
 
@@ -98,20 +99,60 @@ void saved_ntag213_save(const Ntag213Pages* pages) {
     furi_record_close(RECORD_DIALOGS);
 }
 
-bool saved_ntag213_browse(Ntag213Pages* pages) {
+static bool read_native(Storage* storage, const char* path, Ntag213Pages* pages) {
+    FileInfo info;
+    if(storage_common_stat(storage, path, &info) != FSE_OK || info.size > 8192U) return false;
+
+    FlipperFormat* file = flipper_format_file_alloc(storage);
+    FuriString* value = furi_string_alloc();
+    uint32_t version, total, read;
+    uint8_t uid[NTAG213_UID_BYTES];
+    uint8_t tag_version[NTAG213_VERSION_BYTES];
+    bool loaded = flipper_format_file_open_existing(file, path) &&
+                  flipper_format_read_header(file, value, &version) && version == 4 &&
+                  furi_string_equal(value, "Flipper NFC device") &&
+                  flipper_format_read_string(file, "Device type", value) &&
+                  furi_string_equal(value, "NTAG/Ultralight") &&
+                  flipper_format_read_hex(file, "UID", uid, sizeof(uid)) &&
+                  flipper_format_read_string(file, "NTAG/Ultralight type", value) &&
+                  furi_string_equal(value, "NTAG213") &&
+                  flipper_format_read_hex(file, "Mifare version", tag_version, sizeof(tag_version)) &&
+                  memcmp(tag_version, ntag213_version, sizeof(tag_version)) == 0 &&
+                  flipper_format_read_uint32(file, "Pages total", &total, 1) &&
+                  total == NTAG213_TOTAL_PAGES &&
+                  flipper_format_read_uint32(file, "Pages read", &read, 1) &&
+                  read >= NTAG213_READ_PAGES && read <= total;
+    for(unsigned page = 0; loaded && page < NTAG213_READ_PAGES; page++) {
+        char key[16];
+        snprintf(key, sizeof(key), "Page %u", page);
+        loaded = flipper_format_read_hex(
+            file, key, pages->bytes + page * NTAG213_PAGE_BYTES, NTAG213_PAGE_BYTES);
+    }
+    if(loaded) {
+        uint8_t memory_uid[NTAG213_UID_BYTES];
+        ntag213_pages_uid(pages, memory_uid);
+        loaded = ntag213_pages_valid(pages) && memcmp(uid, memory_uid, sizeof(uid)) == 0;
+    }
+    furi_string_free(value);
+    flipper_format_free(file);
+    return loaded;
+}
+
+bool saved_ntag213_browse(Ntag213Pages* pages, bool native) {
     Storage* storage = furi_record_open(RECORD_STORAGE);
-    FuriString* dir = ntag213_directory(storage);
+    FuriString* dir = native ? furi_string_alloc_set(EXT_PATH("nfc")) : ntag213_directory(storage);
     DialogsApp* dialogs = furi_record_open(RECORD_DIALOGS);
     bool loaded = false;
     if(dir) {
         DialogsFileBrowserOptions options;
-        dialog_file_browser_set_basic_options(&options, DUMP_EXT, NULL);
+        dialog_file_browser_set_basic_options(&options, native ? ".nfc" : DUMP_EXT, NULL);
         options.base_path = furi_string_get_cstr(dir);
         options.hide_ext = true;
 
         FuriString* selected = furi_string_alloc();
         if(dialog_file_browser_show(dialogs, selected, dir, &options)) {
-            loaded = read_dump(storage, furi_string_get_cstr(selected), pages);
+            const char* path = furi_string_get_cstr(selected);
+            loaded = native ? read_native(storage, path, pages) : read_dump(storage, path, pages);
             if(!loaded) dialog_message_show_storage_error(dialogs, "Invalid NTAG file");
         }
         furi_string_free(selected);

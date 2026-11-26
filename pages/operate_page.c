@@ -16,6 +16,7 @@ OperatePage* operate_page_create(SubmenuItemCallback callback, void* context) {
     operate_page->saved_submenu = submenu_alloc();
     submenu_set_header(operate_page->saved_submenu, "Saved");
     submenu_add_item(operate_page->saved_submenu, "NTAG213 Dumps", OperateBrowseNtag213, callback, context);
+    submenu_add_item(operate_page->saved_submenu, "Open NTAG213 NFC", OperateImportNtag213, callback, context);
     submenu_add_item(operate_page->saved_submenu, "EM4100 Tags", OperateBrowseEm4100, callback, context);
     submenu_add_item(operate_page->saved_submenu, "Tag Reads", OperateBrowseTagReads, callback, context);
 
