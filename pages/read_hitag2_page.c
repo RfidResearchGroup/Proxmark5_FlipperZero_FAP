@@ -25,7 +25,7 @@ struct ReadHitag2Page {
     View* view;
 
     FuriThread* worker_thread;
-    volatile bool worker_thread_running;
+    bool worker_restart_requested;
     volatile bool worker_thread_cancel_requested;
 
     ReadHitag2PageBackCallback back_callback;
@@ -110,6 +110,7 @@ static int
     int wait_result =
         proxmark5_frame_wait(pm3cmd, resp, 2000, cancel_requested);
     if(wait_result != PM3_SUCCESS) {
+        proxmark5_frame_set_operation_cancel(NULL);
         SendCommandNG(CMD_BREAK_LOOP, NULL, 0);
         free(packet);
         free(resp);
@@ -224,20 +225,6 @@ static bool read_hitag2_page_input_callback(InputEvent* event, void* context) {
     return false;
 }
 
-static void read_hitag2_page_cleanup_worker(ReadHitag2Page* read_hitag2_page) {
-    if(!read_hitag2_page || !read_hitag2_page->worker_thread) {
-        return;
-    }
-
-    if(read_hitag2_page->worker_thread_running) {
-        return;
-    }
-
-    furi_thread_join(read_hitag2_page->worker_thread);
-    furi_thread_free(read_hitag2_page->worker_thread);
-    read_hitag2_page->worker_thread = NULL;
-}
-
 static int32_t read_hitag2_page_worker(void* context) {
     ReadHitag2Page* read_hitag2_page = context;
     if(!read_hitag2_page) {
@@ -255,6 +242,7 @@ static int32_t read_hitag2_page_worker(void* context) {
 
     ReadHitag2PageModel* model = view_get_model(read_hitag2_page->view);
     model->result = result;
+    if(*cancel) result = PM3_EOPABORTED;
     if(result == PM3_SUCCESS) {
         model->state = ReadHitag2PageStateSuccess;
         model->uid = uid;
@@ -268,7 +256,6 @@ static int32_t read_hitag2_page_worker(void* context) {
     }
     view_commit_model(read_hitag2_page->view, true);
 
-    read_hitag2_page->worker_thread_running = false;
     return 0;
 }
 
@@ -306,22 +293,20 @@ ReadHitag2Page*
     return read_hitag2_page;
 }
 
+void read_hitag2_page_stop_worker(ReadHitag2Page* read_hitag2_page) {
+    if(!read_hitag2_page || !read_hitag2_page->worker_thread) return;
+    read_hitag2_page_stop(read_hitag2_page);
+    furi_thread_join(read_hitag2_page->worker_thread);
+    furi_thread_free(read_hitag2_page->worker_thread);
+    read_hitag2_page->worker_thread = NULL;
+}
+
 void read_hitag2_page_free(ReadHitag2Page* read_hitag2_page) {
     if(!read_hitag2_page) {
         return;
     }
 
-    // Runs on the app thread after the view dispatcher has stopped, so blocking here
-    // is safe. The worker notices the cancel flag within ~10ms and issues its own
-    // CMD_BREAK_LOOP, which keeps SPI traffic on the worker thread where it belongs.
-    read_hitag2_page->worker_thread_cancel_requested = true;
-
-    if(read_hitag2_page->worker_thread) {
-        furi_thread_join(read_hitag2_page->worker_thread);
-        furi_thread_free(read_hitag2_page->worker_thread);
-        read_hitag2_page->worker_thread = NULL;
-        read_hitag2_page->worker_thread_running = false;
-    }
+    read_hitag2_page_stop_worker(read_hitag2_page);
 
     if(read_hitag2_page->view) {
         view_set_context(read_hitag2_page->view, NULL);
@@ -341,19 +326,32 @@ View* read_hitag2_page_get_view(ReadHitag2Page* read_hitag2_page) {
     return read_hitag2_page->view;
 }
 
+void read_hitag2_page_tick(ReadHitag2Page* page) {
+    if(!page->worker_thread || !page->worker_thread_cancel_requested ||
+       furi_thread_get_state(page->worker_thread) != FuriThreadStateStopped) {
+        return;
+    }
+
+    furi_thread_free(page->worker_thread);
+    page->worker_thread = NULL;
+    if(page->worker_restart_requested) {
+        read_hitag2_page_start(page);
+    }
+}
+
 void read_hitag2_page_start(ReadHitag2Page* read_hitag2_page) {
-    if(!read_hitag2_page || !read_hitag2_page->view) {
-        return;
-    }
+    if(!read_hitag2_page || !read_hitag2_page->view) return;
 
-    read_hitag2_page_cleanup_worker(read_hitag2_page);
-
-    // Check cleanup_worker()'s pointer, not worker_thread_running - that flag
-    // can flip false between the two checks and leak the old FuriThread.
     if(read_hitag2_page->worker_thread) {
-        return;
+        if(furi_thread_get_state(read_hitag2_page->worker_thread) != FuriThreadStateStopped) {
+            read_hitag2_page->worker_restart_requested = read_hitag2_page->worker_thread_cancel_requested;
+            return;
+        }
+        furi_thread_free(read_hitag2_page->worker_thread);
     }
 
+    read_hitag2_page->worker_restart_requested = false;
+    read_hitag2_page->worker_thread_cancel_requested = false;
     ReadHitag2PageModel* model = view_get_model(read_hitag2_page->view);
     model->state = ReadHitag2PageStateRunning;
     model->result = PM3_SUCCESS;
@@ -361,35 +359,13 @@ void read_hitag2_page_start(ReadHitag2Page* read_hitag2_page) {
     model->uid_valid = false;
     view_commit_model(read_hitag2_page->view, true);
 
-    read_hitag2_page->worker_thread_cancel_requested = false;
-
-    // Upstream noted this size was provisional ("此处的栈大小仅供测试"). The frame ring no
-    // longer puts ~9KB of PacketResponseNG on the stack, but PacketResponseNG is still
-    // ~560 bytes and several live in this call path, so keep real headroom.
     read_hitag2_page->worker_thread =
-        furi_thread_alloc_ex("ReadHitag2Task", 8192, read_hitag2_page_worker, read_hitag2_page);
-    if(!read_hitag2_page->worker_thread) {
-        model = view_get_model(read_hitag2_page->view);
-        model->state = ReadHitag2PageStateError;
-        model->result = PM3_EMALLOC;
-        view_commit_model(read_hitag2_page->view, true);
-        return;
-    }
-
-    read_hitag2_page->worker_thread_running = true;
+        furi_thread_alloc_ex("ReadHitag2PageTask", 8192, read_hitag2_page_worker, read_hitag2_page);
     furi_thread_start(read_hitag2_page->worker_thread);
 }
 
-// Called from the GUI thread (view previous-callback / left button), so it must never
-// block. It only raises the cancel flag; the worker sends CMD_BREAK_LOOP itself and the
-// thread is reaped later by read_hitag2_page_start() or read_hitag2_page_free().
-//
-// The original version called furi_thread_join() here via read_hitag2_page_cleanup_worker(),
-// which blocked the ViewDispatcher thread and froze the whole UI after a failed read.
-void read_hitag2_page_stop(ReadHitag2Page* read_hitag2_page) {
-    if(!read_hitag2_page || !read_hitag2_page->worker_thread) {
-        return;
-    }
-
-    read_hitag2_page->worker_thread_cancel_requested = true;
+void read_hitag2_page_stop(ReadHitag2Page* page) {
+    if(!page) return;
+    page->worker_restart_requested = false;
+    page->worker_thread_cancel_requested = true;
 }

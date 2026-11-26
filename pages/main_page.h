@@ -1,6 +1,7 @@
 #ifndef FMPS_CXT_CANVAS_VIEW_H
 #define FMPS_CXT_CANVAS_VIEW_H
 
+#include <stdatomic.h>
 #include <gui/view.h>
 #include <gui/modules/text_box.h>
 #include <gui/modules/variable_item_list.h>
@@ -17,11 +18,13 @@ typedef struct {
 
     // Proxmark5 handshake thread
     FuriThread* proxmark5_handshake_thread;
-    bool proxmark5_handshake_thread_running;
+    atomic_bool proxmark5_handshake_thread_running;
 } MainPage;
 
 MainPage*
     main_page_create(MainPageOperateCallback operate_callback, void* operate_callback_context);
+void main_page_start(MainPage* page);
+void main_page_stop_worker(MainPage* page);
 void main_page_free(MainPage* main_page);
 
 #endif // FMPS_CXT_CANVAS_VIEW_H

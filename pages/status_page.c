@@ -23,7 +23,8 @@ struct StatusPage {
     View* view;
 
     FuriThread* worker_thread;
-    volatile bool worker_thread_running;
+    bool worker_thread_running;
+    bool worker_restart_requested;
     volatile bool worker_thread_cancel_requested;
 };
 
@@ -120,32 +121,7 @@ static bool status_page_input_callback(InputEvent* event, void* context) {
     return false;
 }
 
-static void status_page_cleanup_worker(StatusPage* status_page) {
-    if(!status_page || !status_page->worker_thread) {
-        return;
-    }
-    if(status_page->worker_thread_running) {
-        return;
-    }
-    furi_thread_join(status_page->worker_thread);
-    furi_thread_free(status_page->worker_thread);
-    status_page->worker_thread = NULL;
-}
-
-static bool status_page_worker_check_cancel(StatusPage* status_page) {
-    if(!status_page->worker_thread_cancel_requested) {
-        return false;
-    }
-    status_page->worker_thread_running = false;
-    return true;
-}
-
-static int32_t status_page_scan(void* context) {
-    StatusPage* status_page = context;
-    if(!status_page) {
-        return 0;
-    }
-
+static void status_page_scan(StatusPage* status_page) {
     volatile bool* cancel = &status_page->worker_thread_cancel_requested;
     char lines[STATUS_PAGE_MAX_LINES][STATUS_PAGE_LINE_LEN];
     char rows[STATUS_PAGE_PAGE_COUNT][STATUS_PAGE_ROWS_PER_PAGE][STATUS_PAGE_LINE_LEN];
@@ -159,9 +135,9 @@ static int32_t status_page_scan(void* context) {
     uint32_t stats_start_tick = furi_get_tick();
 
     int caps_result = status_test_capabilities_fetch(cancel, lines, &count);
-    if(status_page_worker_check_cancel(status_page)) {
+    if(*cancel) {
         furi_thread_list_free(thread_list);
-        return 0;
+        return;
     }
 
     // No reply at all means the device isn't responding - skip the other 4
@@ -169,10 +145,10 @@ static int32_t status_page_scan(void* context) {
     if(caps_result == PM3_ETIMEOUT || caps_result == PM3_EIO) {
         furi_thread_list_free(thread_list);
         StatusPageModel* model = view_get_model(status_page->view);
-        model->ui_state = StatusPageStateUnreachable;
-        view_commit_model(status_page->view, true);
-        status_page->worker_thread_running = false;
-        return 0;
+        bool active = !*cancel;
+        if(active) model->ui_state = StatusPageStateUnreachable;
+        view_commit_model(status_page->view, active);
+        return;
     }
 
     if(count >= 6) {
@@ -187,9 +163,9 @@ static int32_t status_page_scan(void* context) {
 
     count = 0;
     status_test_flash_chip_fetch(cancel, lines, &count);
-    if(status_page_worker_check_cancel(status_page)) {
+    if(*cancel) {
         furi_thread_list_free(thread_list);
-        return 0;
+        return;
     }
     // ChipID is always this fetch fn's last line, whatever its index.
     if(count > 0) {
@@ -200,9 +176,9 @@ static int32_t status_page_scan(void* context) {
 
     count = 0;
     status_test_battery_fetch(cancel, lines, &count);
-    if(status_page_worker_check_cancel(status_page)) {
+    if(*cancel) {
         furi_thread_list_free(thread_list);
-        return 0;
+        return;
     }
     if(count >= 1) {
         memcpy(rows[1][0], lines[0], STATUS_PAGE_LINE_LEN);
@@ -233,9 +209,9 @@ static int32_t status_page_scan(void* context) {
 
     count = 0;
     status_test_ping_fetch(cancel, lines, &count);
-    if(status_page_worker_check_cancel(status_page)) {
+    if(*cancel) {
         furi_thread_list_free(thread_list);
-        return 0;
+        return;
     }
     char ping_rtt[STATUS_PAGE_LINE_LEN];
     char ping_echo[STATUS_PAGE_LINE_LEN];
@@ -249,9 +225,9 @@ static int32_t status_page_scan(void* context) {
 
     count = 0;
     status_test_cep_fetch(cancel, lines, &count);
-    if(status_page_worker_check_cancel(status_page)) {
+    if(*cancel) {
         furi_thread_list_free(thread_list);
-        return 0;
+        return;
     }
     if(count >= 1) {
         memcpy(rows[2][0], lines[0], STATUS_PAGE_LINE_LEN);
@@ -280,24 +256,35 @@ static int32_t status_page_scan(void* context) {
     snprintf(rows[3][2], STATUS_PAGE_LINE_LEN, "Window:   %lums", (unsigned long)stats_window_ms);
 
     StatusPageModel* model = view_get_model(status_page->view);
+    if(*cancel) {
+        view_commit_model(status_page->view, false);
+        return;
+    }
     model->ui_state = StatusPageStateReady;
     model->current_page = 0;
     memcpy(model->rows, rows, sizeof(rows));
     view_commit_model(status_page->view, true);
 
-    status_page->worker_thread_running = false;
-    return 0;
 }
 
 static int32_t status_page_worker(void* context) {
     StatusPage* status_page = context;
-    if(!proxmark5_frame_begin_operation(&status_page->worker_thread_cancel_requested)) {
-        status_page->worker_thread_running = false;
-        return 0;
+    for(;;) {
+        if(proxmark5_frame_begin_operation(&status_page->worker_thread_cancel_requested)) {
+            status_page_scan(status_page);
+            proxmark5_frame_end_operation();
+        }
+
+        view_get_model(status_page->view);
+        if(!status_page->worker_restart_requested) {
+            status_page->worker_thread_running = false;
+            view_commit_model(status_page->view, false);
+            return 0;
+        }
+        status_page->worker_restart_requested = false;
+        status_page->worker_thread_cancel_requested = false;
+        view_commit_model(status_page->view, false);
     }
-    int32_t result = status_page_scan(context);
-    proxmark5_frame_end_operation();
-    return result;
 }
 
 StatusPage* status_page_create(void) {
@@ -327,25 +314,21 @@ StatusPage* status_page_create(void) {
     return status_page;
 }
 
+void status_page_stop_worker(StatusPage* status_page) {
+    if(!status_page || !status_page->worker_thread) return;
+    status_page_stop(status_page);
+    furi_thread_join(status_page->worker_thread);
+    furi_thread_free(status_page->worker_thread);
+    status_page->worker_thread = NULL;
+}
+
 void status_page_free(StatusPage* status_page) {
     if(!status_page) {
         return;
     }
 
-    // Runs on the app thread after the view dispatcher has stopped, so
-    // blocking here is safe - see status_page_stop()'s comment for why that
-    // one must never block.
-    status_page->worker_thread_cancel_requested = true;
-
-    if(status_page->worker_thread) {
-        furi_thread_join(status_page->worker_thread);
-        furi_thread_free(status_page->worker_thread);
-        status_page->worker_thread = NULL;
-        status_page->worker_thread_running = false;
-    }
-
+    status_page_stop_worker(status_page);
     if(status_page->view) {
-        view_set_context(status_page->view, NULL);
         view_free_model(status_page->view);
         view_free(status_page->view);
         status_page->view = NULL;
@@ -366,21 +349,25 @@ void status_page_start(StatusPage* status_page) {
         return;
     }
 
-    status_page_cleanup_worker(status_page);
-
-    // Check cleanup_worker()'s pointer, not worker_thread_running - that flag
-    // can flip false between the two checks and leak the old FuriThread.
-    if(status_page->worker_thread) {
+    StatusPageModel* model = view_get_model(status_page->view);
+    bool running = status_page->worker_thread_running;
+    if(running && !status_page->worker_thread_cancel_requested) {
+        view_commit_model(status_page->view, false);
         return;
     }
 
-    StatusPageModel* model = view_get_model(status_page->view);
     model->ui_state = StatusPageStateRunning;
-    model->current_page = 0;
     memset(model->rows, 0, sizeof(model->rows));
+    status_page->worker_restart_requested = running;
     view_commit_model(status_page->view, true);
+    if(running) {
+        return;
+    }
 
-    status_page->worker_thread_cancel_requested = false;
+    if(status_page->worker_thread) {
+        furi_thread_join(status_page->worker_thread);
+        furi_thread_free(status_page->worker_thread);
+    }
 
     // Same stack sizing rationale as ReadHitag2Task: PacketResponseNG is
     // ~560 bytes and several live on this call path at once.
@@ -393,14 +380,20 @@ void status_page_start(StatusPage* status_page) {
         return;
     }
 
+    view_get_model(status_page->view);
+    status_page->worker_thread_cancel_requested = false;
     status_page->worker_thread_running = true;
+    view_commit_model(status_page->view, false);
     furi_thread_start(status_page->worker_thread);
 }
 
-// See status_page.h - non-blocking on purpose, mirrors read_hitag2_page_stop().
 void status_page_stop(StatusPage* status_page) {
-    if(!status_page || !status_page->worker_thread) {
+    if(!status_page) {
         return;
     }
+
+    view_get_model(status_page->view);
     status_page->worker_thread_cancel_requested = true;
+    status_page->worker_restart_requested = false;
+    view_commit_model(status_page->view, false);
 }

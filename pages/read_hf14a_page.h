@@ -10,6 +10,8 @@ typedef void (*ReadHf14aPageBackCallback)(void* context);
 
 ReadHf14aPage*
     read_hf14a_page_create(ReadHf14aPageBackCallback back_callback, void* back_callback_context);
+void read_hf14a_page_tick(ReadHf14aPage* page);
+void read_hf14a_page_stop_worker(ReadHf14aPage* read_hf14a_page);
 void read_hf14a_page_free(ReadHf14aPage* read_hf14a_page);
 
 View* read_hf14a_page_get_view(ReadHf14aPage* read_hf14a_page);
