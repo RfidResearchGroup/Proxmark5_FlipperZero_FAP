@@ -94,6 +94,10 @@ static void status_page_draw_callback(Canvas* canvas, void* context) {
     canvas_draw_str_aligned(canvas, 124, 10, AlignRight, AlignBottom, page_indicator);
 
     canvas_set_font(canvas, FontSecondary);
+    if(model->ui_state == StatusPageStateReady &&
+       (model->current_page == StatusTabWiFi || model->current_page == StatusTabBle)) {
+        canvas_draw_str_aligned(canvas, 104, 10, AlignRight, AlignBottom, "Snapshot");
+    }
     if(model->ui_state == StatusPageStateRunning) {
         canvas_draw_str(canvas, 4, 24, "Reading status...");
     } else if(model->ui_state == StatusPageStateUnreachable) {
@@ -157,12 +161,10 @@ static void status_page_publish_tab(
 }
 
 static void status_page_fill_battery_tabs(
-    volatile bool* cancel,
     const bwm_battery_info_t* battery,
     char rows[STATUS_PAGE_PAGE_COUNT][STATUS_PAGE_ROWS_PER_PAGE][STATUS_PAGE_LINE_LEN]) {
     char lines[STATUS_PAGE_MAX_LINES][STATUS_PAGE_LINE_LEN];
-    int count = 0;
-    status_test_battery_fetch(cancel, battery, lines, &count);
+    int count = status_test_format_battery(battery, lines);
     if(count == 8) {
         memcpy(rows[StatusTabPower], lines, sizeof(rows[0]));
         memcpy(rows[StatusTabBattery], lines + 4, sizeof(rows[0]));
@@ -240,14 +242,8 @@ static void status_page_scan(StatusPage* status_page) {
         snprintf(rows[StatusTabLink][3], STATUS_PAGE_LINE_LEN, "Echo:   N/A");
     }
 
-    bool battery_fallback = bwm_compiled && cep_result != PM3_SUCCESS;
     if(bwm_compiled) {
-        if(battery_fallback) {
-            snprintf(rows[StatusTabPower][0], STATUS_PAGE_LINE_LEN, "Reading battery...");
-            snprintf(rows[StatusTabBattery][0], STATUS_PAGE_LINE_LEN, "Reading battery...");
-        } else {
-            status_page_fill_battery_tabs(cancel, &battery, rows);
-        }
+        status_page_fill_battery_tabs(cep_result == PM3_SUCCESS ? &battery : NULL, rows);
         snprintf(rows[StatusTabWiFi][0], STATUS_PAGE_LINE_LEN, "Reading Wi-Fi...");
         snprintf(rows[StatusTabBle][0], STATUS_PAGE_LINE_LEN, "Reading BLE...");
     } else {
@@ -284,17 +280,6 @@ static void status_page_scan(StatusPage* status_page) {
     model->ui_state = StatusPageStateReady;
     memcpy(model->rows, rows, sizeof(rows));
     view_commit_model(status_page->view, true);
-
-    if(battery_fallback) {
-        memset(rows[StatusTabPower], 0, sizeof(rows[0]));
-        memset(rows[StatusTabBattery], 0, sizeof(rows[0]));
-        status_page_fill_battery_tabs(cancel, NULL, rows);
-        if(*cancel) {
-            return;
-        }
-        status_page_publish_tab(status_page, StatusTabPower, rows[StatusTabPower]);
-        status_page_publish_tab(status_page, StatusTabBattery, rows[StatusTabBattery]);
-    }
 
     if(bwm_compiled) {
         memset(rows[StatusTabWiFi], 0, sizeof(rows[0]));
