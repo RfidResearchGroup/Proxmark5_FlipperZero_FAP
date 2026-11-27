@@ -5,15 +5,22 @@
 
 typedef enum {
     OperateOpenMenu,
+    OperateOpenHardware,
+    OperateOpenSaved,
+    OperateBrowseEm4100,
+    OperateBrowseTagReads,
     OperateReadHitag2,
     OperateReadHf14a,
     OperateOpenStatus,
     OperateOpenAntennaCheck,
     OperateOpenLiveVoltage,
+    OperateSimpleReaderFirst,
 } OperateAction;
 
 typedef struct {
     Submenu* submenu;
+    Submenu* hardware_submenu;
+    Submenu* saved_submenu;
 } OperatePage;
 
 OperatePage* operate_page_create(SubmenuItemCallback callback, void* context);
