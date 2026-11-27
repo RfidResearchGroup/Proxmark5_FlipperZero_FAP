@@ -11,6 +11,14 @@
 #define PROXMARK5_LOG_TAG            "Proxmark5_COM"
 
 #define BUFFER_SIZE 600 // Proxmark5 data packet max size is 512bytes.
+#define SYNC_BYTE 0x55
+// Sync preamble, sent before every frame in the same CS-held transaction,
+// so PM5's polled SPI1 reception has a wide enough window to notice the
+// frame start. Must match armsrc/pm5_cep.c's cep_spi_data_available().
+#define SYNC_LEN  500 // ~2ms at 2MHz
+#define COMMAND_FRAME_CAPACITY (SYNC_LEN + 2 + BUFFER_SIZE + 1)
+#define SPI_DMA_TIMEOUT_MS 100
+#define REPLY_TRAILER_SIZE 2u
 #define PM3_SUCCESS 0
 #define PM3_EIO     -8
 
@@ -29,7 +37,8 @@ typedef struct {
     volatile uint32_t last_send_tick;
 
     // RX packet buffer stored in context (heap-backed via com_context)
-    uint8_t packet[BUFFER_SIZE];
+    uint8_t packet[BUFFER_SIZE + REPLY_TRAILER_SIZE];
+    uint8_t spi_scratch[COMMAND_FRAME_CAPACITY];
 } Proxmark5ComContext;
 
 // Global context for proxmark5 communication, it will be initialized in proxmark5_com_init
@@ -113,7 +122,7 @@ static int32_t proxmark5_com_spi_task(void* context) {
         // every CS edge, so splitting desyncs the two sides.
         proxmark5_spi_acquire();
 
-        if(!proxmark5_spi_trx_raw(spi_len_header, sizeof(spi_len_header), 100)) {
+        if(!proxmark5_spi_trx_raw(NULL, spi_len_header, sizeof(spi_len_header), 100)) {
             proxmark5_spi_release();
             furi_delay_ms(fast ? FAST_POLL_PENALTY_MS : PENALTY_POLL_MS);
             continue;
@@ -131,7 +140,17 @@ static int32_t proxmark5_com_spi_task(void* context) {
 
         FURI_LOG_I(PROXMARK5_LOG_TAG, "Data length to receive: %u", data_length);
 
-        bool got_payload = proxmark5_spi_trx_raw(com_context->packet, data_length, 2000);
+        bool got_payload;
+        if(data_length == sizeof("yes")) {
+            got_payload = proxmark5_spi_trx_raw(NULL, com_context->packet, data_length, 100);
+        } else {
+            // Clock the payload and trailer together so scheduling cannot pause the transfer.
+            uint8_t* tx = com_context->spi_scratch;
+            memset(tx, 0xff, data_length);
+            memset(tx + data_length, SYNC_BYTE, REPLY_TRAILER_SIZE);
+            got_payload = proxmark5_spi_trx_dma_raw(
+                tx, com_context->packet, data_length + REPLY_TRAILER_SIZE, SPI_DMA_TIMEOUT_MS);
+        }
         proxmark5_spi_release();
 
         if(!got_payload) {
@@ -292,12 +311,6 @@ bool proxmark5_com_handshake(void) {
  * @return true if the packet is sent successfully
  * @return false if the packet fails to send
  */
-// Sync preamble, sent before every frame in the same CS-held transaction,
-// so PM5's polled SPI1 reception has a wide enough window to notice the
-// frame start. Must match armsrc/pm5_cep.c's cep_spi_data_available().
-#define SYNC_BYTE 0x55
-#define SYNC_LEN  500 // ~2ms at 2MHz
-
 bool proxmark5_com_send_spi(uint8_t* data, size_t length) {
     if(com_context == NULL || data == NULL || length == 0 || length > BUFFER_SIZE) {
         return false;
@@ -308,7 +321,7 @@ bool proxmark5_com_send_spi(uint8_t* data, size_t length) {
     // Build preamble + length header + payload + trailer in one buffer and
     // send it as a single tx call - splitting the transfer desyncs PM5's
     // HW-CS slave mode, same as the RX side.
-    uint8_t frame_buf[SYNC_LEN + 2 + BUFFER_SIZE + 1];
+    uint8_t frame_buf[COMMAND_FRAME_CAPACITY];
     memset(frame_buf, SYNC_BYTE, SYNC_LEN);
     frame_buf[SYNC_LEN + 0] = (uint8_t)(length & 0xFF);
     frame_buf[SYNC_LEN + 1] = (uint8_t)((length >> 8) & 0xFF);
@@ -316,7 +329,9 @@ bool proxmark5_com_send_spi(uint8_t* data, size_t length) {
     frame_buf[SYNC_LEN + 2 + length] = 0x00; // DXL: last byte must be 0x00 to keep the proxmark5 no data rx.
 
     proxmark5_spi_acquire();
-    bool ok = proxmark5_spi_tx_raw(frame_buf, SYNC_LEN + 2 + length + 1, 1000);
+    bool ok = proxmark5_spi_trx_dma_raw(
+        frame_buf, com_context->spi_scratch, SYNC_LEN + 2 + length + 1,
+        SPI_DMA_TIMEOUT_MS);
     proxmark5_spi_release();
 
     if(!ok) {
