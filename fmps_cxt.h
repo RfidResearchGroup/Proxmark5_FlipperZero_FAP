@@ -21,16 +21,8 @@ typedef enum {
     ReadHitag2PageViewId,
     // HF 14a Reader operation page
     ReadHf14aPageViewId,
-    // Paginated hardware-status dashboard (Core/Power/Link)
     StatusPageViewId,
 } Proxmark5ViewId;
-
-typedef enum {
-    Proxmark5CustomEventOpenOperatePage,
-    Proxmark5CustomEventOpenReadHitag2Page,
-    Proxmark5CustomEventOpenReadHf14aPage,
-    Proxmark5CustomEventOpenStatusPage,
-} Proxmark5CustomEvent;
 
 typedef struct {
     Gui* gui;

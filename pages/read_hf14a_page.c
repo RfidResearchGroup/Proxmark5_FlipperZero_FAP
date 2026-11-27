@@ -23,42 +23,16 @@ struct ReadHf14aPage {
     View* view;
 
     FuriThread* worker_thread;
-    volatile bool worker_thread_running;
+    bool worker_restart_requested;
     volatile bool worker_thread_cancel_requested;
 
     ReadHf14aPageBackCallback back_callback;
     void* back_callback_context;
 };
 
-static int read_hf14a_wait_for_response_interruptible(
-    uint16_t cmd,
-    PacketResponseNG* resp,
-    uint32_t timeout_ms,
-    volatile bool* cancel_requested) {
-    uint32_t start_time = furi_get_tick();
-
-    while((furi_get_tick() - start_time) < timeout_ms) {
-        if(cancel_requested && *cancel_requested) {
-            return PM3_EOPABORTED;
-        }
-
-        if(proxmark5_frame_take_by_cmd(cmd, resp)) {
-            return PM3_SUCCESS;
-        }
-
-        furi_delay_ms(10);
-    }
-
-    if(cancel_requested && *cancel_requested) {
-        return PM3_EOPABORTED;
-    }
-
-    return proxmark5_frame_take_by_cmd(cmd, resp) ? PM3_SUCCESS : PM3_ETIMEOUT;
-}
-
 // A connect-only select is a single bounded exchange (the firmware's own
 // protocol timing bounds it, not a multi-attempt loop like Hitag2's reader),
-// so unlike read_hitag2_test() this never needs to send CMD_BREAK_LOOP.
+// so there is no need to send CMD_BREAK_LOOP.
 static int read_hf14a_test(volatile bool* cancel_requested, iso14a_card_select_t* out_card, bool* out_found) {
     if(out_found) {
         *out_found = false;
@@ -86,9 +60,12 @@ static int read_hf14a_test(volatile bool* cancel_requested, iso14a_card_select_t
         return PM3_EOPABORTED;
     }
 
-    SendCommandNG(CMD_HF_ISO14443A_READER, (uint8_t*)&cmd, sizeof(cmd));
+    if(!SendCommandNG(CMD_HF_ISO14443A_READER, (uint8_t*)&cmd, sizeof(cmd))) {
+        free(resp);
+        return cancel_requested && *cancel_requested ? PM3_EOPABORTED : PM3_EIO;
+    }
 
-    int wait_result = read_hf14a_wait_for_response_interruptible(
+    int wait_result = proxmark5_frame_wait(
         CMD_HF_ISO14443A_READER, resp, 2000, cancel_requested);
     if(wait_result != PM3_SUCCESS) {
         free(resp);
@@ -196,20 +173,6 @@ static bool read_hf14a_page_input_callback(InputEvent* event, void* context) {
     return false;
 }
 
-static void read_hf14a_page_cleanup_worker(ReadHf14aPage* read_hf14a_page) {
-    if(!read_hf14a_page || !read_hf14a_page->worker_thread) {
-        return;
-    }
-
-    if(read_hf14a_page->worker_thread_running) {
-        return;
-    }
-
-    furi_thread_join(read_hf14a_page->worker_thread);
-    furi_thread_free(read_hf14a_page->worker_thread);
-    read_hf14a_page->worker_thread = NULL;
-}
-
 static int32_t read_hf14a_page_worker(void* context) {
     ReadHf14aPage* read_hf14a_page = context;
     if(!read_hf14a_page) {
@@ -218,10 +181,15 @@ static int32_t read_hf14a_page_worker(void* context) {
 
     iso14a_card_select_t card;
     bool found = false;
-    int result =
-        read_hf14a_test(&read_hf14a_page->worker_thread_cancel_requested, &card, &found);
+    volatile bool* cancel = &read_hf14a_page->worker_thread_cancel_requested;
+    int result = PM3_EOPABORTED;
+    if(proxmark5_frame_begin_operation(cancel)) {
+        result = read_hf14a_test(cancel, &card, &found);
+        proxmark5_frame_end_operation();
+    }
 
     ReadHf14aPageModel* model = view_get_model(read_hf14a_page->view);
+    if(*cancel) result = PM3_EOPABORTED;
     if(result == PM3_SUCCESS) {
         if(found) {
             model->state = ReadHf14aPageStateSuccess;
@@ -238,7 +206,6 @@ static int32_t read_hf14a_page_worker(void* context) {
     }
     view_commit_model(read_hf14a_page->view, true);
 
-    read_hf14a_page->worker_thread_running = false;
     return 0;
 }
 
@@ -274,21 +241,20 @@ ReadHf14aPage*
     return read_hf14a_page;
 }
 
+void read_hf14a_page_stop_worker(ReadHf14aPage* read_hf14a_page) {
+    if(!read_hf14a_page || !read_hf14a_page->worker_thread) return;
+    read_hf14a_page_stop(read_hf14a_page);
+    furi_thread_join(read_hf14a_page->worker_thread);
+    furi_thread_free(read_hf14a_page->worker_thread);
+    read_hf14a_page->worker_thread = NULL;
+}
+
 void read_hf14a_page_free(ReadHf14aPage* read_hf14a_page) {
     if(!read_hf14a_page) {
         return;
     }
 
-    // Runs on the app thread after the view dispatcher has stopped, so blocking
-    // here is safe - same contract as read_hitag2_page_free().
-    read_hf14a_page->worker_thread_cancel_requested = true;
-
-    if(read_hf14a_page->worker_thread) {
-        furi_thread_join(read_hf14a_page->worker_thread);
-        furi_thread_free(read_hf14a_page->worker_thread);
-        read_hf14a_page->worker_thread = NULL;
-        read_hf14a_page->worker_thread_running = false;
-    }
+    read_hf14a_page_stop_worker(read_hf14a_page);
 
     if(read_hf14a_page->view) {
         view_set_context(read_hf14a_page->view, NULL);
@@ -308,47 +274,44 @@ View* read_hf14a_page_get_view(ReadHf14aPage* read_hf14a_page) {
     return read_hf14a_page->view;
 }
 
+void read_hf14a_page_tick(ReadHf14aPage* page) {
+    if(!page->worker_thread || !page->worker_thread_cancel_requested ||
+       furi_thread_get_state(page->worker_thread) != FuriThreadStateStopped) {
+        return;
+    }
+
+    furi_thread_free(page->worker_thread);
+    page->worker_thread = NULL;
+    if(page->worker_restart_requested) {
+        read_hf14a_page_start(page);
+    }
+}
+
 void read_hf14a_page_start(ReadHf14aPage* read_hf14a_page) {
-    if(!read_hf14a_page || !read_hf14a_page->view) {
-        return;
-    }
+    if(!read_hf14a_page || !read_hf14a_page->view) return;
 
-    read_hf14a_page_cleanup_worker(read_hf14a_page);
-
-    // Check cleanup_worker()'s pointer, not worker_thread_running - that flag
-    // can flip false between the two checks and leak the old FuriThread.
     if(read_hf14a_page->worker_thread) {
-        return;
+        if(furi_thread_get_state(read_hf14a_page->worker_thread) != FuriThreadStateStopped) {
+            read_hf14a_page->worker_restart_requested = read_hf14a_page->worker_thread_cancel_requested;
+            return;
+        }
+        furi_thread_free(read_hf14a_page->worker_thread);
     }
 
+    read_hf14a_page->worker_restart_requested = false;
+    read_hf14a_page->worker_thread_cancel_requested = false;
     ReadHf14aPageModel* model = view_get_model(read_hf14a_page->view);
     model->state = ReadHf14aPageStateRunning;
     memset(&model->card, 0, sizeof(model->card));
     view_commit_model(read_hf14a_page->view, true);
 
-    read_hf14a_page->worker_thread_cancel_requested = false;
-
-    // Same stack sizing rationale as ReadHitag2Task: PacketResponseNG is
-    // ~560 bytes and several live on this call path at once.
     read_hf14a_page->worker_thread =
-        furi_thread_alloc_ex("ReadHf14aTask", 8192, read_hf14a_page_worker, read_hf14a_page);
-    if(!read_hf14a_page->worker_thread) {
-        model = view_get_model(read_hf14a_page->view);
-        model->state = ReadHf14aPageStateError;
-        view_commit_model(read_hf14a_page->view, true);
-        return;
-    }
-
-    read_hf14a_page->worker_thread_running = true;
+        furi_thread_alloc_ex("ReadHf14aPageTask", 8192, read_hf14a_page_worker, read_hf14a_page);
     furi_thread_start(read_hf14a_page->worker_thread);
 }
 
-// Called from the GUI thread (view previous-callback / left button), so it must
-// never block - same non-blocking contract as read_hitag2_page_stop().
-void read_hf14a_page_stop(ReadHf14aPage* read_hf14a_page) {
-    if(!read_hf14a_page || !read_hf14a_page->worker_thread) {
-        return;
-    }
-
-    read_hf14a_page->worker_thread_cancel_requested = true;
+void read_hf14a_page_stop(ReadHf14aPage* page) {
+    if(!page) return;
+    page->worker_restart_requested = false;
+    page->worker_thread_cancel_requested = true;
 }

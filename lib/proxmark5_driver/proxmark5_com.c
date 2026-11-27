@@ -1,3 +1,4 @@
+#include <stdatomic.h>
 #include <furi_hal.h>
 #include <string.h>
 #include "proxmark5_com.h"
@@ -31,6 +32,7 @@ typedef struct {
     // Thread for handling SPI communication
     FuriThread* thread_rx_spi;
     bool thread_running;
+    atomic_bool waiting_for_reply;
 
     // Tick of the last send attempt; RX poll uses a short-sleep window
     // right after, since a reply typically lands within tens of ms.
@@ -44,6 +46,10 @@ typedef struct {
 // Global context for proxmark5 communication, it will be initialized in proxmark5_com_init
 //  and deinitialized in proxmark5_com_deinit
 static Proxmark5ComContext* com_context = NULL;
+
+void proxmark5_com_set_waiting(bool waiting) {
+    atomic_store_explicit(&com_context->waiting_for_reply, waiting, memory_order_relaxed);
+}
 
 static uint16_t pm5_u16_le(const uint8_t* data) {
     return (uint16_t)data[0] | ((uint16_t)data[1] << 8);
@@ -95,11 +101,14 @@ static void proxmark5_cc_ctrl_deinit(void) {
 #define FAST_POLL_PENALTY_MS 10
 #define IDLE_POLL_MS         20
 #define PENALTY_POLL_MS      100
+// The PM5 ends the CEP session after 3 seconds without SPI activity.
+#define CEP_KEEPALIVE_POLL_MS 1000U
 
 // Receive data from proxmark5 over SPI and cache parsed response frames.
 static int32_t proxmark5_com_spi_task(void* context) {
     UNUSED(context);
     uint8_t spi_len_header[2];
+    uint32_t last_poll = furi_get_tick();
 
     // Block STOP2 deep sleep for as long as this thread polls CEP - on
     // battery power STOP2's wake latency (PLL/BLE restart) otherwise stacks
@@ -113,6 +122,13 @@ static int32_t proxmark5_com_spi_task(void* context) {
         // hammers the bus with 0xFF filler continuously.
         furi_delay_ms(fast ? FAST_POLL_IDLE_MS : IDLE_POLL_MS);
 
+        const bool waiting =
+            atomic_load_explicit(&com_context->waiting_for_reply, memory_order_relaxed);
+        if(!waiting && !com_context->handshake_waiting &&
+           (furi_get_tick() - last_poll) < CEP_KEEPALIVE_POLL_MS) {
+            continue;
+        }
+
         // Reset length header before spi receive to avoid processing stale length in case of timeout
         spi_len_header[0] = 0;
         spi_len_header[1] = 0;
@@ -121,6 +137,7 @@ static int32_t proxmark5_com_spi_task(void* context) {
         // one per piece - PM5's HW-CS slave mode starts a fresh frame on
         // every CS edge, so splitting desyncs the two sides.
         proxmark5_spi_acquire();
+        last_poll = furi_get_tick();
 
         if(!proxmark5_spi_trx_raw(NULL, spi_len_header, sizeof(spi_len_header), 100)) {
             proxmark5_spi_release();
@@ -207,6 +224,7 @@ void proxmark5_com_init(void) {
     // Thread for RX COM
     com_context->thread_rx_spi = NULL;
     com_context->thread_running = false;
+    atomic_init(&com_context->waiting_for_reply, false);
     com_context->handshake_waiting = false;
     com_context->handshake_matched = false;
     com_context->handshake_state = 0;

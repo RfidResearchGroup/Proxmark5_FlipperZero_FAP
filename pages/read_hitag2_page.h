@@ -10,6 +10,8 @@ typedef void (*ReadHitag2PageBackCallback)(void* context);
 
 ReadHitag2Page*
     read_hitag2_page_create(ReadHitag2PageBackCallback back_callback, void* back_callback_context);
+void read_hitag2_page_tick(ReadHitag2Page* page);
+void read_hitag2_page_stop_worker(ReadHitag2Page* read_hitag2_page);
 void read_hitag2_page_free(ReadHitag2Page* read_hitag2_page);
 
 View* read_hitag2_page_get_view(ReadHitag2Page* read_hitag2_page);

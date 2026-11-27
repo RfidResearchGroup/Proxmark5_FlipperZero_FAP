@@ -4,6 +4,7 @@
 #include <gui/elements.h>
 #include "main_page.h"
 #include "proxmark5_com.h"
+#include "proxmark5_frame.h"
 
 typedef enum {
     MainPageHandshakeRunning,
@@ -74,11 +75,14 @@ static bool main_page_input_callback(InputEvent* event, void* ctx) {
 
     MainPageModel* model = view_get_model(page->canvas_view);
 
+    const bool connected = model->state == MainPageShowDeviceInfo;
+    view_commit_model(page->canvas_view, false);
+
     // Only handle the right button short press event when the handshake is successful
     // and the operate callback is set
     if((event->type == InputTypeShort) &&
        (event->key == InputKeyRight || event->key == InputKeyOk) &&
-       (model->state == MainPageShowDeviceInfo)) {
+       connected) {
         page->operate_callback(page->operate_callback_context);
         return true;
     }
@@ -93,21 +97,23 @@ static int32_t proxmark5_handshake_task(void* context) {
 
     while(1) {
         // If the thread is marked as not running, exit the loop
-        if(!page->proxmark5_handshake_thread_running) {
+        if(!atomic_load_explicit(&page->proxmark5_handshake_thread_running, memory_order_relaxed)) {
             break;
         }
 
         // Advance loading animation while waiting for handshake
         phase = (phase + 1) % 4;
         MainPageModel* model = view_get_model(page->canvas_view);
-        if(model->state == MainPageHandshakeRunning) {
-            model->loading_phase = phase;
-            view_commit_model(page->canvas_view, true);
-        }
+        model->loading_phase = phase;
+        view_commit_model(page->canvas_view, true);
 
         // Try to perform the proxmark5 handshake, if successful, show the success message and exit the loop
-        if(proxmark5_com_handshake()) {
+        proxmark5_frame_begin_operation(NULL);
+        bool connected = proxmark5_com_handshake();
+        proxmark5_frame_end_operation();
+        if(connected) {
             // Switch to the success state and update the view to show the success message
+            model = view_get_model(page->canvas_view);
             model->state = MainPageShowDeviceInfo;
             view_commit_model(page->canvas_view, true);
             FURI_LOG_I("proxmark5_handshake_task", "Proxmark5 handshake successful");
@@ -117,7 +123,7 @@ static int32_t proxmark5_handshake_task(void* context) {
         furi_delay_ms(100);
     }
     // Mark the thread as not running when exiting the loop
-    page->proxmark5_handshake_thread_running = false;
+    atomic_store_explicit(&page->proxmark5_handshake_thread_running, false, memory_order_relaxed);
     return 0;
 }
 
@@ -145,12 +151,12 @@ static void fmps_cxt_canvas_draw_callback(Canvas* canvas, void* ctx) {
     }
 }
 
-// Only called from main_page_free(), blocking is safe. Join unconditionally -
+// Join before removing the view. Join unconditionally because
 // the running flag can go false before the kernel marks the thread Stopped,
 // so trusting it risks freeing a thread the kernel still considers running.
-static void proxmark5_handshake_task_stop(MainPage* page) {
-    if(page->proxmark5_handshake_thread) {
-        page->proxmark5_handshake_thread_running = false;
+void main_page_stop_worker(MainPage* page) {
+    if(page && page->proxmark5_handshake_thread) {
+        atomic_store_explicit(&page->proxmark5_handshake_thread_running, false, memory_order_relaxed);
         furi_thread_join(page->proxmark5_handshake_thread);
         furi_thread_free(page->proxmark5_handshake_thread);
         page->proxmark5_handshake_thread = NULL;
@@ -158,7 +164,7 @@ static void proxmark5_handshake_task_stop(MainPage* page) {
 }
 
 // Start the proxmark5 handshake thread
-void proxmark5_handshake_task_start(MainPage* page) {
+void main_page_start(MainPage* page) {
     if(page->proxmark5_handshake_thread) {
         return;
     }
@@ -166,7 +172,7 @@ void proxmark5_handshake_task_start(MainPage* page) {
     // Handshake path may call deep PM3 driver code; keep a safer stack budget on F0.
     page->proxmark5_handshake_thread =
         furi_thread_alloc_ex("HandshakeTask", 1024, proxmark5_handshake_task, page);
-    page->proxmark5_handshake_thread_running = true;
+    atomic_store_explicit(&page->proxmark5_handshake_thread_running, true, memory_order_relaxed);
     furi_thread_start(page->proxmark5_handshake_thread);
 }
 
@@ -181,6 +187,7 @@ MainPage*
     if(!main_page) {
         return NULL;
     }
+    atomic_init(&main_page->proxmark5_handshake_thread_running, false);
     // Allocate the canvas view for the main page
     main_page->canvas_view = view_alloc();
     main_page->operate_callback = operate_callback;
@@ -191,27 +198,25 @@ MainPage*
 
     // The model as a pointer to the main page struct,
     // so we can access the state and other info in the draw callback
-    view_allocate_model(main_page->canvas_view, ViewModelTypeLockFree, sizeof(MainPageModel));
+    view_allocate_model(main_page->canvas_view, ViewModelTypeLocking, sizeof(MainPageModel));
     MainPageModel* model = view_get_model(main_page->canvas_view);
     model->page = main_page;
     model->state = MainPageHandshakeRunning; // Default to the handshake running state
     model->loading_phase = 0;
+    view_commit_model(main_page->canvas_view, false);
 
     // Set the draw callback for the canvas view
     view_set_draw_callback(main_page->canvas_view, fmps_cxt_canvas_draw_callback);
     view_set_input_callback(main_page->canvas_view, main_page_input_callback);
 
-    // Start the proxmark5 handshake thread
-    proxmark5_handshake_task_start(main_page);
     return main_page;
 }
 
 // Free the main page and its resources
 void main_page_free(MainPage* main_page) {
     if(main_page) {
-        proxmark5_handshake_task_stop(main_page);
+        main_page_stop_worker(main_page);
         if(main_page->canvas_view) {
-            view_set_context(main_page->canvas_view, NULL);
             view_free_model(main_page->canvas_view);
             view_free(main_page->canvas_view);
         }
