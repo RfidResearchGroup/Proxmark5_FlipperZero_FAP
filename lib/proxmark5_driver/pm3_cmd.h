@@ -1122,6 +1122,12 @@ typedef struct {
 #define BWM_WIFI_STATE_STOPPED 4
 #define BWM_WIFI_STATE_OFF 0xFF
 
+// Power settings take [action][value if SET]. Wi-Fi sleep also returns radio state.
+#define CMD_PM5_BWM_POWERSAVE 0x0181
+#define CMD_PM5_BWM_WIFI_PS 0x0182
+#define BWM_POWER_ACTION_GET 0x00
+#define BWM_POWER_ACTION_SET 0x01
+
 // BWM BLE status reply from proxmark3 include/pm3_cmd.h.
 #define CMD_PM5_BWM_BLE 0x0183
 #define BWM_BLE_ACTION_STATUS 0x00

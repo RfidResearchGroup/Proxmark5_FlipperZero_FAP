@@ -83,6 +83,10 @@ static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
         view_dispatcher_switch_to_view(app->view_dispatcher, ReadHf14aPageViewId);
         read_hf14a_page_start(app->read_hf14a_page);
         return true;
+    case OperateOpenBwmPower:
+        view_dispatcher_switch_to_view(app->view_dispatcher, BwmPowerViewId);
+        bwm_power_page_start(app->bwm_power);
+        return true;
     case OperateOpenStatus:
         view_dispatcher_switch_to_view(app->view_dispatcher, StatusPageViewId);
         status_page_start(app->status_page);
@@ -125,6 +129,7 @@ static void fmps_cxt_tick(void* context) {
     live_voltage_page_tick(app->live_voltage_page);
     status_page_tick(app->status_page);
     simple_reader_page_tick(app->simple_reader_page);
+    bwm_power_page_tick(app->bwm_power);
 }
 
 static uint32_t status_page_previous_callback(void* context) {
@@ -219,6 +224,11 @@ Proxmark5App* proxmark5_app_alloc() {
     view_dispatcher_add_view(
         app->view_dispatcher, StatusPageViewId, status_page_get_view(app->status_page));
 
+    app->bwm_power = bwm_power_page_create();
+    View* bwm_power_view = bwm_power_page_get_view(app->bwm_power);
+    view_set_previous_callback(bwm_power_view, hardware_menu_previous_callback);
+    view_dispatcher_add_view(app->view_dispatcher, BwmPowerViewId, bwm_power_view);
+
     app->antenna_check_page = antenna_check_page_create(fmps_cxt_open_live_voltage, app);
     View* antenna_check_view = antenna_check_page_get_view(app->antenna_check_page);
     view_set_previous_callback(antenna_check_view, hardware_menu_previous_callback);
@@ -250,6 +260,7 @@ void proxmark5_app_free(Proxmark5App* app) {
     antenna_check_page_stop_worker(app->antenna_check_page);
     live_voltage_page_stop_worker(app->live_voltage_page);
     simple_reader_page_stop_worker(app->simple_reader_page);
+    bwm_power_page_stop_worker(app->bwm_power);
 
     view_dispatcher_remove_view(app->view_dispatcher, SimpleReaderPageViewId);
     simple_reader_page_free(app->simple_reader_page);
@@ -284,6 +295,8 @@ void proxmark5_app_free(Proxmark5App* app) {
         status_page_free(app->status_page);
         app->status_page = NULL;
     }
+    view_dispatcher_remove_view(app->view_dispatcher, BwmPowerViewId);
+    bwm_power_page_free(app->bwm_power);
     view_dispatcher_remove_view(app->view_dispatcher, AntennaCheckPageViewId);
     antenna_check_page_free(app->antenna_check_page);
     view_dispatcher_remove_view(app->view_dispatcher, LiveVoltagePageViewId);
