@@ -88,6 +88,7 @@ static void fmps_cxt_tick(void* context) {
     read_hf14a_page_tick(app->read_hf14a_page);
     antenna_check_page_tick(app->antenna_check_page);
     live_voltage_page_tick(app->live_voltage_page);
+    status_page_tick(app->status_page);
 }
 
 static uint32_t status_page_previous_callback(void* context) {

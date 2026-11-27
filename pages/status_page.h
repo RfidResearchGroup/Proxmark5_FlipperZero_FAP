@@ -6,12 +6,12 @@
 
 #define STATUS_PAGE_MAX_LINES 8
 #define STATUS_PAGE_LINE_LEN 40
-#define STATUS_PAGE_PAGE_COUNT 4
 #define STATUS_PAGE_ROWS_PER_PAGE 4
 
 typedef struct StatusPage StatusPage;
 
 StatusPage* status_page_create(void);
+void status_page_tick(StatusPage* page);
 void status_page_stop_worker(StatusPage* status_page);
 void status_page_free(StatusPage* status_page);
 

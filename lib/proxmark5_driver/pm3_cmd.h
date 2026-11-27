@@ -1110,17 +1110,35 @@ typedef struct {
 
 #define START_FLASH_MAGIC 0x54494f44 // 'DOIT'
 
-// --- PM5-only additions, not present in upstream official PM3 ------------------
-// Vendored from RfidResearchGroup/proxmark3 include/pmflash.h + include/pm3_cmd.h.
-// Re-check against those files if either command's reply shape ever changes.
+// PM5 commands and replies from proxmark3 include/pm3_cmd.h.
 
-// Reply to CMD_FLASHMEM_GET_INFO.
+// BWM Wi-Fi status reply: state and IPv4. Start reply: IPv4 only.
+#define CMD_PM5_BWM_WIFI 0x017C
+#define BWM_WIFI_ACTION_STATUS 0x02
+#define BWM_WIFI_STATE_DISCONNECTED 0
+#define BWM_WIFI_STATE_CONNECTING 1
+#define BWM_WIFI_STATE_CONNECTED 2
+#define BWM_WIFI_STATE_RECONNECT 3
+#define BWM_WIFI_STATE_STOPPED 4
+#define BWM_WIFI_STATE_OFF 0xFF
+
+// BWM BLE status reply from proxmark3 include/pm3_cmd.h.
+#define CMD_PM5_BWM_BLE 0x0183
+#define BWM_BLE_ACTION_STATUS 0x00
+#define BWM_BLE_BONDED_MAX 8
+
 typedef struct {
-    uint8_t  manufacturer_id;
-    uint8_t  device_id;
-    uint16_t jedec_id;
-    uint8_t  pages64k;
-} PACKED spi_flash_t;
+    uint8_t enabled;
+    uint8_t state;
+    uint8_t bonding;
+    char passkey[6];
+    uint8_t txp_adv;
+    uint8_t txp_conn;
+    uint8_t addr[6];
+    char name[16];
+    uint8_t bonded_count;
+    uint8_t bonded[BWM_BLE_BONDED_MAX][7];
+} PACKED bwm_ble_status_t;
 
 // PM5, read compact BWM battery telemetry - see include/pm3_cmd.h in the
 // proxmark3-RRG repo for the authoritative definition.

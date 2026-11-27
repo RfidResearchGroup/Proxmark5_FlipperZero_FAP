@@ -3,15 +3,26 @@
 #include <gui/elements.h>
 #include <string.h>
 #include "status_page.h"
-#include "proxmark5_frame.h"
 #include "status_page_tests.h"
 #include "pm3_cmd.h"
+#include "proxmark5_frame.h"
 
 typedef enum {
     StatusPageStateRunning,
     StatusPageStateReady,
     StatusPageStateUnreachable,
 } StatusPageUiState;
+
+typedef enum {
+    StatusTabCore,
+    StatusTabPower,
+    StatusTabBattery,
+    StatusTabWiFi,
+    StatusTabBle,
+    StatusTabLink,
+    StatusTabScheduler,
+    STATUS_PAGE_PAGE_COUNT,
+} StatusTab;
 
 typedef struct {
     StatusPageUiState ui_state;
@@ -23,6 +34,7 @@ struct StatusPage {
     View* view;
 
     FuriThread* worker_thread;
+    // The view model lock protects the worker state and pending restart.
     bool worker_thread_running;
     bool worker_restart_requested;
     volatile bool worker_thread_cancel_requested;
@@ -31,8 +43,11 @@ struct StatusPage {
 static const char* const status_page_titles[STATUS_PAGE_PAGE_COUNT] = {
     "Core",
     "Power",
+    "Battery Capacity",
+    "BWM Wi-Fi",
+    "BWM BLE",
     "Link",
-    "Sched"};
+    "Scheduler"};
 
 // Truncates with "..." using real measured glyph widths (FontSecondary is
 // proportional, not monospace) rather than a guessed character budget.
@@ -79,8 +94,12 @@ static void status_page_draw_callback(Canvas* canvas, void* context) {
     canvas_draw_str_aligned(canvas, 124, 10, AlignRight, AlignBottom, page_indicator);
 
     canvas_set_font(canvas, FontSecondary);
+    if(model->ui_state == StatusPageStateReady &&
+       (model->current_page == StatusTabWiFi || model->current_page == StatusTabBle)) {
+        canvas_draw_str_aligned(canvas, 104, 10, AlignRight, AlignBottom, "Snapshot");
+    }
     if(model->ui_state == StatusPageStateRunning) {
-        canvas_draw_str(canvas, 4, 24, "Testing... please wait");
+        canvas_draw_str(canvas, 4, 24, "Reading status...");
     } else if(model->ui_state == StatusPageStateUnreachable) {
         canvas_draw_str(canvas, 4, 24, "Device not responding");
     } else {
@@ -91,6 +110,9 @@ static void status_page_draw_callback(Canvas* canvas, void* context) {
         }
     }
 
+    if(model->ui_state != StatusPageStateRunning) {
+        elements_button_center(canvas, "Refresh");
+    }
     if(model->ui_state == StatusPageStateReady) {
         elements_button_left(canvas, "Prev");
         elements_button_right(canvas, "Next");
@@ -104,6 +126,11 @@ static bool status_page_input_callback(InputEvent* event, void* context) {
     StatusPage* status_page = context;
     if(!status_page || !event) {
         return false;
+    }
+
+    if(event->type == InputTypeShort && event->key == InputKeyOk) {
+        status_page_start(status_page);
+        return true;
     }
 
     if(event->type == InputTypeShort &&
@@ -121,6 +148,32 @@ static bool status_page_input_callback(InputEvent* event, void* context) {
     return false;
 }
 
+static void status_page_publish_tab(
+    StatusPage* status_page,
+    StatusTab tab,
+    const char rows[STATUS_PAGE_ROWS_PER_PAGE][STATUS_PAGE_LINE_LEN]) {
+    StatusPageModel* model = view_get_model(status_page->view);
+    bool active = !status_page->worker_thread_cancel_requested;
+    if(active) {
+        memcpy(model->rows[tab], rows, sizeof(model->rows[tab]));
+    }
+    view_commit_model(status_page->view, active);
+}
+
+static void status_page_fill_battery_tabs(
+    const bwm_battery_info_t* battery,
+    char rows[STATUS_PAGE_PAGE_COUNT][STATUS_PAGE_ROWS_PER_PAGE][STATUS_PAGE_LINE_LEN]) {
+    char lines[STATUS_PAGE_MAX_LINES][STATUS_PAGE_LINE_LEN];
+    int count = status_test_format_battery(battery, lines);
+    if(count == 8) {
+        memcpy(rows[StatusTabPower], lines, sizeof(rows[0]));
+        memcpy(rows[StatusTabBattery], lines + 4, sizeof(rows[0]));
+    } else if(count == 1) {
+        memcpy(rows[StatusTabPower][0], lines[0], STATUS_PAGE_LINE_LEN);
+        memcpy(rows[StatusTabBattery][0], lines[0], STATUS_PAGE_LINE_LEN);
+    }
+}
+
 static void status_page_scan(StatusPage* status_page) {
     volatile bool* cancel = &status_page->worker_thread_cancel_requested;
     char lines[STATUS_PAGE_MAX_LINES][STATUS_PAGE_LINE_LEN];
@@ -128,115 +181,79 @@ static void status_page_scan(StatusPage* status_page) {
     memset(rows, 0, sizeof(rows));
     int count = 0;
 
-    // Bookends the whole run below so the "Sched" page's cpu% covers the
-    // same window the test matrix measures, not a separate sampling period.
+    // Measure the initial status scan before the separate radio requests.
     FuriThreadList* thread_list = furi_thread_list_alloc();
     furi_thread_enumerate(thread_list);
     uint32_t stats_start_tick = furi_get_tick();
 
-    int caps_result = status_test_capabilities_fetch(cancel, lines, &count);
+    bool bwm_compiled = false;
+    int caps_result = status_test_capabilities_fetch(cancel, lines, &count, &bwm_compiled);
     if(*cancel) {
         furi_thread_list_free(thread_list);
         return;
     }
 
-    // No reply at all means the device isn't responding - skip the other 4
-    // tests (they'd all time out too) and show one error page instead.
+    // Skip the remaining requests if the device does not answer.
     if(caps_result == PM3_ETIMEOUT || caps_result == PM3_EIO) {
         furi_thread_list_free(thread_list);
         StatusPageModel* model = view_get_model(status_page->view);
         bool active = !*cancel;
-        if(active) model->ui_state = StatusPageStateUnreachable;
+        if(active) {
+            model->ui_state = StatusPageStateUnreachable;
+        }
         view_commit_model(status_page->view, active);
         return;
     }
 
     if(count >= 6) {
-        memcpy(rows[0][0], lines[1], STATUS_PAGE_LINE_LEN);
-        memcpy(rows[0][2], lines[4], STATUS_PAGE_LINE_LEN);
-        memcpy(rows[0][3], lines[5], STATUS_PAGE_LINE_LEN);
+        memcpy(rows[StatusTabCore][0], lines[1], STATUS_PAGE_LINE_LEN);
+        memcpy(rows[StatusTabCore][2], lines[4], STATUS_PAGE_LINE_LEN);
+        memcpy(rows[StatusTabCore][3], lines[5], STATUS_PAGE_LINE_LEN);
     } else {
-        snprintf(rows[0][0], STATUS_PAGE_LINE_LEN, "BWM/CEP:   N/A");
-        snprintf(rows[0][2], STATUS_PAGE_LINE_LEN, "MaxCmdData:   N/A");
-        snprintf(rows[0][3], STATUS_PAGE_LINE_LEN, "Baud:   N/A");
+        snprintf(rows[StatusTabCore][0], STATUS_PAGE_LINE_LEN, "BWM/CEP:   N/A");
+        snprintf(rows[StatusTabCore][2], STATUS_PAGE_LINE_LEN, "MaxCmdData:   N/A");
+        snprintf(rows[StatusTabCore][3], STATUS_PAGE_LINE_LEN, "Link:   N/A");
     }
 
-    count = 0;
-    status_test_flash_chip_fetch(cancel, lines, &count);
+    status_test_chip_id_fetch(cancel, rows[StatusTabCore][1]);
     if(*cancel) {
         furi_thread_list_free(thread_list);
         return;
     }
-    // ChipID is always this fetch fn's last line, whatever its index.
-    if(count > 0) {
-        memcpy(rows[0][1], lines[count - 1], STATUS_PAGE_LINE_LEN);
+
+    bwm_battery_info_t battery;
+    int cep_result = status_test_cep_fetch(cancel, rows[StatusTabLink], &battery);
+    if(*cancel) {
+        furi_thread_list_free(thread_list);
+        return;
+    }
+
+    uint32_t rtt_ms;
+    bool echo_received = status_test_ping_fetch(&rtt_ms);
+    if(*cancel) {
+        furi_thread_list_free(thread_list);
+        return;
+    }
+    if(echo_received) {
+        snprintf(rows[StatusTabLink][2], STATUS_PAGE_LINE_LEN, "RTT:   %lums", (unsigned long)rtt_ms);
+        snprintf(rows[StatusTabLink][3], STATUS_PAGE_LINE_LEN, "Echo:   OK");
     } else {
-        snprintf(rows[0][1], STATUS_PAGE_LINE_LEN, "ChipID: N/A");
+        snprintf(rows[StatusTabLink][2], STATUS_PAGE_LINE_LEN, "RTT:   N/A");
+        snprintf(rows[StatusTabLink][3], STATUS_PAGE_LINE_LEN, "Echo:   N/A");
     }
 
-    count = 0;
-    status_test_battery_fetch(cancel, lines, &count);
-    if(*cancel) {
-        furi_thread_list_free(thread_list);
-        return;
-    }
-    if(count >= 1) {
-        memcpy(rows[1][0], lines[0], STATUS_PAGE_LINE_LEN);
-    }
-    if(count >= 2) {
-        memcpy(rows[1][1], lines[1], STATUS_PAGE_LINE_LEN);
-    }
-    if(count >= 3) {
-        memcpy(rows[1][2], lines[2], STATUS_PAGE_LINE_LEN);
-    }
-    {
-        // Fault's index isn't fixed (Health may or may not precede it) -
-        // find it by prefix. Shown in place of Temp when present, since a
-        // real fault is more actionable than ambient temperature.
-        const char* fault_line = NULL;
-        for(int i = 4; i < count; i++) {
-            if(strncmp(lines[i], "Fault:", 6) == 0) {
-                fault_line = lines[i];
-                break;
-            }
-        }
-        if(fault_line) {
-            memcpy(rows[1][3], fault_line, STATUS_PAGE_LINE_LEN);
-        } else if(count >= 4) {
-            memcpy(rows[1][3], lines[3], STATUS_PAGE_LINE_LEN);
-        }
-    }
-
-    count = 0;
-    status_test_ping_fetch(cancel, lines, &count);
-    if(*cancel) {
-        furi_thread_list_free(thread_list);
-        return;
-    }
-    char ping_rtt[STATUS_PAGE_LINE_LEN];
-    char ping_echo[STATUS_PAGE_LINE_LEN];
-    if(count >= 3) {
-        memcpy(ping_rtt, lines[2], STATUS_PAGE_LINE_LEN);
-        memcpy(ping_echo, lines[1], STATUS_PAGE_LINE_LEN);
+    if(bwm_compiled) {
+        status_page_fill_battery_tabs(cep_result == PM3_SUCCESS ? &battery : NULL, rows);
+        snprintf(rows[StatusTabWiFi][0], STATUS_PAGE_LINE_LEN, "Reading Wi-Fi...");
+        snprintf(rows[StatusTabBle][0], STATUS_PAGE_LINE_LEN, "Reading BLE...");
     } else {
-        snprintf(ping_rtt, STATUS_PAGE_LINE_LEN, "RTT:   N/A");
-        snprintf(ping_echo, STATUS_PAGE_LINE_LEN, "Echo:   N/A");
+        const char* availability = caps_result == PM3_SUCCESS ? "BWM support unavailable" :
+                                                               "Capabilities unavailable";
+        snprintf(rows[StatusTabPower][0], STATUS_PAGE_LINE_LEN, "%s", availability);
+        snprintf(rows[StatusTabBattery][0], STATUS_PAGE_LINE_LEN, "%s", availability);
+        snprintf(rows[StatusTabWiFi][0], STATUS_PAGE_LINE_LEN, "%s", availability);
+        snprintf(rows[StatusTabBle][0], STATUS_PAGE_LINE_LEN, "%s", availability);
     }
-
-    count = 0;
-    status_test_cep_fetch(cancel, lines, &count);
-    if(*cancel) {
-        furi_thread_list_free(thread_list);
-        return;
-    }
-    if(count >= 1) {
-        memcpy(rows[2][0], lines[0], STATUS_PAGE_LINE_LEN);
-    }
-    if(count >= 3) {
-        memcpy(rows[2][1], lines[2], STATUS_PAGE_LINE_LEN);
-    }
-    memcpy(rows[2][2], ping_rtt, STATUS_PAGE_LINE_LEN);
-    memcpy(rows[2][3], ping_echo, STATUS_PAGE_LINE_LEN);
 
     furi_thread_enumerate(thread_list);
     uint32_t stats_window_ms = furi_get_tick() - stats_start_tick;
@@ -251,9 +268,9 @@ static void status_page_scan(StatusPage* status_page) {
     float isr_time = furi_thread_list_get_isr_time(thread_list);
     furi_thread_list_free(thread_list);
 
-    snprintf(rows[3][0], STATUS_PAGE_LINE_LEN, "SPI_RX cpu:   %.1f%%", (double)spi_rx_cpu);
-    snprintf(rows[3][1], STATUS_PAGE_LINE_LEN, "ISR:   %.2f%%", (double)isr_time);
-    snprintf(rows[3][2], STATUS_PAGE_LINE_LEN, "Window:   %lums", (unsigned long)stats_window_ms);
+    snprintf(rows[StatusTabScheduler][0], STATUS_PAGE_LINE_LEN, "SPI_RX cpu:   %.1f%%", (double)spi_rx_cpu);
+    snprintf(rows[StatusTabScheduler][1], STATUS_PAGE_LINE_LEN, "ISR:   %.2f%%", (double)isr_time);
+    snprintf(rows[StatusTabScheduler][2], STATUS_PAGE_LINE_LEN, "Window:   %lums", (unsigned long)stats_window_ms);
 
     StatusPageModel* model = view_get_model(status_page->view);
     if(*cancel) {
@@ -261,10 +278,24 @@ static void status_page_scan(StatusPage* status_page) {
         return;
     }
     model->ui_state = StatusPageStateReady;
-    model->current_page = 0;
     memcpy(model->rows, rows, sizeof(rows));
     view_commit_model(status_page->view, true);
 
+    if(bwm_compiled) {
+        memset(rows[StatusTabWiFi], 0, sizeof(rows[0]));
+        status_test_wifi_fetch(cancel, rows[StatusTabWiFi]);
+        if(*cancel) {
+            return;
+        }
+        status_page_publish_tab(status_page, StatusTabWiFi, rows[StatusTabWiFi]);
+
+        memset(rows[StatusTabBle], 0, sizeof(rows[0]));
+        status_test_ble_fetch(cancel, rows[StatusTabBle]);
+        if(*cancel) {
+            return;
+        }
+        status_page_publish_tab(status_page, StatusTabBle, rows[StatusTabBle]);
+    }
 }
 
 static int32_t status_page_worker(void* context) {
@@ -307,11 +338,17 @@ StatusPage* status_page_create(void) {
 
     StatusPageModel* model = view_get_model(status_page->view);
     model->ui_state = StatusPageStateRunning;
-    model->current_page = 0;
+    model->current_page = StatusTabCore;
     memset(model->rows, 0, sizeof(model->rows));
     view_commit_model(status_page->view, false);
 
     return status_page;
+}
+
+void status_page_tick(StatusPage* page) {
+    if(!page->worker_thread || furi_thread_get_state(page->worker_thread) != FuriThreadStateStopped) return;
+    furi_thread_free(page->worker_thread);
+    page->worker_thread = NULL;
 }
 
 void status_page_stop_worker(StatusPage* status_page) {
