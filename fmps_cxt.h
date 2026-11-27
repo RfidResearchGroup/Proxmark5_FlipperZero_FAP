@@ -11,6 +11,8 @@
 #include "pages/read_hitag2_page.h"
 #include "pages/read_hf14a_page.h"
 #include "pages/status_page.h"
+#include "pages/antenna_check_page.h"
+#include "pages/live_voltage_page.h"
 
 typedef enum {
     // The main page of the app, showing the connection status and some basic info
@@ -22,6 +24,8 @@ typedef enum {
     // HF 14a Reader operation page
     ReadHf14aPageViewId,
     StatusPageViewId,
+    AntennaCheckPageViewId,
+    LiveVoltagePageViewId,
 } Proxmark5ViewId;
 
 typedef struct {
@@ -34,6 +38,8 @@ typedef struct {
     ReadHitag2Page* read_hitag2_page;
     ReadHf14aPage* read_hf14a_page;
     StatusPage* status_page;
+    AntennaCheckPage* antenna_check_page;
+    LiveVoltagePage* live_voltage_page;
 } Proxmark5App;
 
 #endif // FMPS_CXT_H

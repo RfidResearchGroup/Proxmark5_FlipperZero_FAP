@@ -25,6 +25,14 @@ static void fmps_cxt_menu_selected(void* context, uint32_t action) {
     view_dispatcher_send_custom_event(app->view_dispatcher, action);
 }
 
+static void fmps_cxt_open_live_voltage(void* context) {
+    fmps_cxt_menu_selected(context, OperateOpenLiveVoltage);
+}
+
+static void fmps_cxt_open_antenna_check(void* context) {
+    fmps_cxt_menu_selected(context, OperateOpenAntennaCheck);
+}
+
 static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
     Proxmark5App* app = context;
 
@@ -43,6 +51,12 @@ static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
     case OperateOpenStatus:
         view_dispatcher_switch_to_view(app->view_dispatcher, StatusPageViewId);
         status_page_start(app->status_page);
+        return true;
+    case OperateOpenAntennaCheck:
+        view_dispatcher_switch_to_view(app->view_dispatcher, AntennaCheckPageViewId);
+        return true;
+    case OperateOpenLiveVoltage:
+        view_dispatcher_switch_to_view(app->view_dispatcher, LiveVoltagePageViewId);
         return true;
     default:
         return false;
@@ -72,12 +86,24 @@ static void fmps_cxt_tick(void* context) {
     Proxmark5App* app = context;
     read_hitag2_page_tick(app->read_hitag2_page);
     read_hf14a_page_tick(app->read_hf14a_page);
+    antenna_check_page_tick(app->antenna_check_page);
+    live_voltage_page_tick(app->live_voltage_page);
 }
 
 static uint32_t status_page_previous_callback(void* context) {
     StatusPage* status_page = context;
     status_page_stop(status_page);
     return OperatePageViewId;
+}
+
+static uint32_t functions_menu_previous_callback(void* context) {
+    UNUSED(context);
+    return OperatePageViewId;
+}
+
+static uint32_t live_voltage_previous_callback(void* context) {
+    UNUSED(context);
+    return AntennaCheckPageViewId;
 }
 
 Proxmark5App* proxmark5_app_alloc() {
@@ -128,6 +154,16 @@ Proxmark5App* proxmark5_app_alloc() {
     view_dispatcher_add_view(
         app->view_dispatcher, StatusPageViewId, status_page_get_view(app->status_page));
 
+    app->antenna_check_page = antenna_check_page_create(fmps_cxt_open_live_voltage, app);
+    View* antenna_check_view = antenna_check_page_get_view(app->antenna_check_page);
+    view_set_previous_callback(antenna_check_view, functions_menu_previous_callback);
+    view_dispatcher_add_view(app->view_dispatcher, AntennaCheckPageViewId, antenna_check_view);
+
+    app->live_voltage_page = live_voltage_page_create(fmps_cxt_open_antenna_check, app);
+    View* live_voltage_view = live_voltage_page_get_view(app->live_voltage_page);
+    view_set_previous_callback(live_voltage_view, live_voltage_previous_callback);
+    view_dispatcher_add_view(app->view_dispatcher, LiveVoltagePageViewId, live_voltage_view);
+
     // Set the back event callback to handle the back button press, and pass the app context to it
     view_dispatcher_set_event_callback_context(app->view_dispatcher, app);
     view_dispatcher_set_navigation_event_callback(
@@ -146,6 +182,8 @@ void proxmark5_app_free(Proxmark5App* app) {
     read_hitag2_page_stop_worker(app->read_hitag2_page);
     read_hf14a_page_stop_worker(app->read_hf14a_page);
     status_page_stop_worker(app->status_page);
+    antenna_check_page_stop_worker(app->antenna_check_page);
+    live_voltage_page_stop_worker(app->live_voltage_page);
 
     view_dispatcher_remove_view(app->view_dispatcher, MainPageViewId);
     view_dispatcher_remove_view(app->view_dispatcher, OperatePageViewId);
@@ -172,6 +210,10 @@ void proxmark5_app_free(Proxmark5App* app) {
         status_page_free(app->status_page);
         app->status_page = NULL;
     }
+    view_dispatcher_remove_view(app->view_dispatcher, AntennaCheckPageViewId);
+    antenna_check_page_free(app->antenna_check_page);
+    view_dispatcher_remove_view(app->view_dispatcher, LiveVoltagePageViewId);
+    live_voltage_page_free(app->live_voltage_page);
     view_dispatcher_free(app->view_dispatcher);
     furi_record_close(RECORD_GUI);
     free(app);

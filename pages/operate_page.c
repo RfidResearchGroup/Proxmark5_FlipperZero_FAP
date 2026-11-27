@@ -9,6 +9,7 @@ OperatePage* operate_page_create(SubmenuItemCallback callback, void* context) {
     submenu_add_item(menu, "HF 14a Reader", OperateReadHf14a, callback, context);
     submenu_add_item(menu, "Hitag2 Reader", OperateReadHitag2, callback, context);
     submenu_add_item(menu, "Hardware Status", OperateOpenStatus, callback, context);
+    submenu_add_item(menu, "Antenna Check", OperateOpenAntennaCheck, callback, context);
     return operate_page;
 }
 
