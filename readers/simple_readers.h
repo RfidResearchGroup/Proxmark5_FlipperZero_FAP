@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <furi.h>
 
 #define SIMPLE_READER_MAX_LINES 3U
 #define SIMPLE_READER_LINE_SIZE 32U
@@ -21,10 +22,14 @@ typedef struct {
     const char* no_data;
     const char* no_data_hint;
     size_t data_size;
+    bool has_actions;
     int (*read)(SimpleReaderResult* result);
     void (*save)(const uint8_t* data);
+    void (*format)(SimpleReaderResult* result);
+    void (*format_details)(const uint8_t* data, FuriString* text);
 } SimpleReader;
 
+extern const SimpleReader simple_reader_ntag21x;
 extern const SimpleReader* const simple_readers[];
 extern const size_t simple_reader_count;
 

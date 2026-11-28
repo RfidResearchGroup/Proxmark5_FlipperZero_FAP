@@ -394,8 +394,8 @@ typedef struct {
 } PACKED mful_readblock_t;
 
 typedef struct {
-    uint8_t bytelen;
-    uint16_t startidx;
+    uint16_t bytelen;
+    uint32_t startidx;
 } PACKED mful_readblock_resp_t;
 
 typedef struct {
@@ -1169,10 +1169,14 @@ typedef struct {
 } PACKED cep_status_t;
 
 // CMD_HF_ISO14443A_READER request/reply types - vendored from
-// RfidResearchGroup/proxmark3 include/mifare.h. Re-check against that file
-// if the command's request/reply shape ever changes.
+// RfidResearchGroup/proxmark3 include/mifare.h and include/pm3_cmd.h.
 typedef enum ISO14A_COMMAND {
     ISO14A_CONNECT = (1 << 0),
+    ISO14A_NO_DISCONNECT = (1 << 1),
+    ISO14A_RAW = (1 << 3),
+    ISO14A_APPEND_CRC = (1 << 5),
+    ISO14A_SET_TIMEOUT = (1 << 6),
+    ISO14A_NO_RATS = (1 << 9),
     ISO14A_CLEARTRACE = (1 << 17),
 } iso14a_command_t;
 
