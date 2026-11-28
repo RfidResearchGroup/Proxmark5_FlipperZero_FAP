@@ -30,4 +30,10 @@ bool type2_ndef_replace_text_uri(
 bool type2_ndef_replace_vcard(
     uint8_t* data, size_t size, const char* name, const char* phone, const char* email);
 
+#define TYPE2_NDEF_WIFI_SSID_MAX 32U
+#define TYPE2_NDEF_WIFI_KEY_MAX 64U
+
+bool type2_ndef_wifi_key_valid(const char* key);
+bool type2_ndef_replace_wifi(uint8_t* data, size_t size, const char* ssid, const char* key);
+
 #endif

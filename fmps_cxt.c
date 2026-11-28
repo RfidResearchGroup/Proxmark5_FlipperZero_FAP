@@ -104,13 +104,14 @@ static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
     case OperateWriteNtag21xUrl:
     case OperateWriteNtag21xTextAndUrl:
     case OperateWriteNtag21xSmartPoster:
-    case OperateWriteNtag21xVCard: {
+    case OperateWriteNtag21xVCard:
+    case OperateWriteNtag21xWifi: {
         Ntag21xPages pages;
         if(simple_reader_page_get_live_data(
                app->simple_reader_page, &simple_reader_ntag21x, (uint8_t*)&pages)) {
             static const Ntag21xWriteFormat formats[] = {
                 Ntag21xWriteText, Ntag21xWriteUrl, Ntag21xWriteTextAndUrl,
-                Ntag21xWriteSmartPoster, Ntag21xWriteVCard,
+                Ntag21xWriteSmartPoster, Ntag21xWriteVCard, Ntag21xWriteWifi,
             };
             Ntag21xWriteFormat format = formats[event - OperateWriteNtag21x];
             ntag21x_write_page_edit(app->ntag21x_write, &pages, format);
@@ -298,6 +299,8 @@ Proxmark5App* proxmark5_app_alloc() {
         fmps_cxt_menu_selected, app);
     submenu_add_item(
         app->ntag21x_actions, "Write vCard", OperateWriteNtag21xVCard, fmps_cxt_menu_selected, app);
+    submenu_add_item(
+        app->ntag21x_actions, "Write Wi-Fi", OperateWriteNtag21xWifi, fmps_cxt_menu_selected, app);
     View* actions = submenu_get_view(app->ntag21x_actions);
     view_set_previous_callback(actions, reader_details_previous_callback);
     view_dispatcher_add_view(app->view_dispatcher, Ntag21xActionsViewId, actions);

@@ -229,6 +229,31 @@ int main(void) {
     assert(!type2_ndef_replace_vcard(vcard_write, 32, "Ice", "", ""));
     assert(!type2_ndef_replace_text(vcard_write, sizeof(vcard_write), "Other"));
     assert(!memcmp(backup, vcard_write, sizeof(backup)));
+    uint8_t wifi_write[257] = {0};
+    assert(type2_ndef_replace_wifi(wifi_write, sizeof(wifi_write), "PM5 test", "test-5678"));
+    assert(type2_ndef_read(wifi_write, sizeof(wifi_write), text, sizeof(text)) == Type2NdefWifi);
+    assert(strcmp(text, "SSID: PM5 test\nSecurity: WPA2 Personal") == 0);
+    const uint8_t network_key[] = {0x10, 0x27, 0, 9, 't', 'e', 's', 't', '-', '5', '6', '7', '8'};
+    size_t key_offset = 0;
+    for(; key_offset < wifi_write[1] + 2U - sizeof(network_key); key_offset++) {
+        if(!memcmp(wifi_write + key_offset, network_key, sizeof(network_key))) break;
+    }
+    assert(key_offset < wifi_write[1] + 2U - sizeof(network_key));
+    assert(type2_ndef_replace_wifi(wifi_write, sizeof(wifi_write), "Open test", ""));
+    assert(type2_ndef_read(wifi_write, sizeof(wifi_write), text, sizeof(text)) == Type2NdefWifi);
+    assert(strcmp(text, "SSID: Open test\nSecurity: Open") == 0);
+    memcpy(backup, wifi_write, sizeof(backup));
+    assert(!type2_ndef_replace_wifi(wifi_write, sizeof(wifi_write), "PM5 test", "short"));
+    assert(!type2_ndef_replace_wifi(wifi_write, 55, "PM5 test", "test-5678"));
+    assert(!type2_ndef_replace_vcard(wifi_write, sizeof(wifi_write), "Name", "", ""));
+    assert(!memcmp(backup, wifi_write, sizeof(backup)));
+    char psk[65] = {0};
+    memset(psk, 'a', sizeof(psk) - 1);
+    assert(type2_ndef_wifi_key_valid(psk));
+    psk[0] = 'p';
+    assert(!type2_ndef_wifi_key_valid(psk));
+    psk[63] = '\0';
+    assert(type2_ndef_wifi_key_valid(psk));
     return 0;
 }
 '''

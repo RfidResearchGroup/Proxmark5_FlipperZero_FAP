@@ -149,6 +149,10 @@ enum {
     WscCredential = 0x100e,
     WscEncryption = 0x100f,
     WscSsid = 0x1045,
+    WscVersion = 0x104a,
+    WscNetworkIndex = 0x1026,
+    WscNetworkKey = 0x1027,
+    WscMacAddress = 0x1020,
 };
 
 static uint16_t read_be16(const uint8_t* bytes) {
@@ -594,4 +598,57 @@ bool type2_ndef_replace_vcard(
     uint8_t message[SHORT_TLV_MESSAGE_MAX];
     size_t length = put_record(message, 0xd2, type, NULL, 0, payload, used);
     return replace_message(data, size, message, length, single_vcard);
+}
+
+bool type2_ndef_wifi_key_valid(const char* key) {
+    size_t length = strlen(key);
+    if(!length) return true;
+    if(length < 8 || length > TYPE2_NDEF_WIFI_KEY_MAX || !printable(key)) return false;
+    if(length < TYPE2_NDEF_WIFI_KEY_MAX) return true;
+    return strspn(key, "0123456789abcdefABCDEF") == length;
+}
+
+static bool single_wifi(const uint8_t* data, size_t size) {
+    return short_record_size(data, size, 0xd2, "application/vnd.wfa.wsc") == size;
+}
+
+static uint8_t* put_wsc_attribute(uint8_t* next, uint16_t type, const void* value, size_t size) {
+    *next++ = type >> 8;
+    *next++ = type;
+    *next++ = size >> 8;
+    *next++ = size;
+    memcpy(next, value, size);
+    return next + size;
+}
+
+bool type2_ndef_replace_wifi(uint8_t* data, size_t size, const char* ssid, const char* key) {
+    size_t ssid_size = strlen(ssid);
+    size_t key_size = strlen(key);
+    if(!ssid_size || ssid_size > TYPE2_NDEF_WIFI_SSID_MAX || !printable(ssid) ||
+       !type2_ndef_wifi_key_valid(key)) {
+        return false;
+    }
+    // Wi-Fi Simple Configuration NFC Configuration Token, as read by Android NFC.
+    static const char type[] = "application/vnd.wfa.wsc";
+    static const uint8_t version = 0x10;
+    static const uint8_t index = 1;
+    static const uint8_t any_bssid[] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+    const uint8_t auth[] = {0, key_size ? 0x20 : 0x01};
+    const uint8_t encryption[] = {0, key_size ? 0x08 : 0x01};
+    uint8_t payload[44 + TYPE2_NDEF_WIFI_SSID_MAX + TYPE2_NDEF_WIFI_KEY_MAX];
+    uint8_t* credential = put_wsc_attribute(payload, WscVersion, &version, sizeof(version));
+    uint8_t* next = put_wsc_attribute(credential + 4, WscNetworkIndex, &index, sizeof(index));
+    next = put_wsc_attribute(next, WscSsid, ssid, ssid_size);
+    next = put_wsc_attribute(next, WscAuthentication, auth, sizeof(auth));
+    next = put_wsc_attribute(next, WscEncryption, encryption, sizeof(encryption));
+    next = put_wsc_attribute(next, WscNetworkKey, key, key_size);
+    next = put_wsc_attribute(next, WscMacAddress, any_bssid, sizeof(any_bssid));
+    size_t credential_size = next - (credential + 4);
+    credential[0] = WscCredential >> 8;
+    credential[1] = WscCredential & 0xff;
+    credential[2] = credential_size >> 8;
+    credential[3] = credential_size;
+    uint8_t message[SHORT_TLV_MESSAGE_MAX];
+    size_t length = put_record(message, 0xd2, type, NULL, 0, payload, next - payload);
+    return replace_message(data, size, message, length, single_wifi);
 }

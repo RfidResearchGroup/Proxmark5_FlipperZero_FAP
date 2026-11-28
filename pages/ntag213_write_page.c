@@ -78,7 +78,18 @@ static bool link_pair(const Ntag21xWritePage* page) {
 
 static unsigned field_count(const Ntag21xWritePage* page) {
     if(page->format == Ntag21xWriteVCard) return 3;
-    return link_pair(page) ? 2 : 1;
+    return link_pair(page) || page->format == Ntag21xWriteWifi ? 2 : 1;
+}
+
+static bool field_is_key(const Ntag21xWritePage* page) {
+    return page->format == Ntag21xWriteWifi && page->field == 1;
+}
+
+static size_t field_limit(const Ntag21xWritePage* page) {
+    if(page->format == Ntag21xWriteWifi) {
+        return field_is_key(page) ? TYPE2_NDEF_WIFI_KEY_MAX : TYPE2_NDEF_WIFI_SSID_MAX;
+    }
+    return page->value_max;
 }
 
 static bool field_is_url(const Ntag21xWritePage* page) {
@@ -93,6 +104,9 @@ static const char* const* editor_keys(const UrlInputModel* model) {
 
 static const char* field_label(const Ntag21xWritePage* page) {
     if(field_is_url(page)) return "URL (hold OK for caps)";
+    if(page->format == Ntag21xWriteWifi) {
+        return field_is_key(page) ? "Password (blank = open)" : "SSID (hold OK for caps)";
+    }
     if(page->format == Ntag21xWriteVCard) {
         static const char* const labels[] = {
             "Name (hold OK for caps)", "Phone (optional)", "Email (optional)",
@@ -105,6 +119,10 @@ static const char* field_label(const Ntag21xWritePage* page) {
 
 static const char* validate_field(const Ntag21xWritePage* page) {
     const char* value = page->fields[page->field];
+    if(page->format == Ntag21xWriteWifi) {
+        if(field_is_key(page)) return type2_ndef_wifi_key_valid(value) ? NULL : "Use 8-63 chars or hex";
+        return *value ? NULL : "Enter a network name";
+    }
     if(field_is_url(page)) {
         return type2_ndef_url_address_valid(value) ? NULL : "Check the URL host/path";
     }
@@ -206,7 +224,7 @@ static bool url_input_key(InputEvent* event, void* context) {
             model->column = model->symbols ? 0 : strlen(text_keys[model->row]) - 4;
         } else if(key == '\b') {
             if(length) value[length - 1] = '\0';
-        } else if(length < page->value_max) {
+        } else if(length < field_limit(page)) {
             if(event->type == InputTypeLong && key >= 'a' && key <= 'z') key -= 'a' - 'A';
             value[length] = key;
             value[length + 1] = '\0';
@@ -223,6 +241,7 @@ static bool url_input_key(InputEvent* event, void* context) {
             model->column = 0;
             model->notice = NULL;
         } else {
+            if(page->format == Ntag21xWriteWifi) memset(page->fields[1], 0, sizeof(page->fields[1]));
             handled = false;
         }
         break;
@@ -337,6 +356,9 @@ static void ntag21x_write_draw(Canvas* canvas, void* context) {
                 canvas_draw_str(canvas, 4, 35, model->review_field ? scheme : label);
                 draw_url_preview(canvas, page->fields[model->review_field], model->url_offset);
                 elements_button_right(canvas, "Next");
+            } else if(page->format == Ntag21xWriteWifi) {
+                canvas_draw_str(canvas, 4, 35, *page->fields[1] ? "WPA2 Personal" : "Open network");
+                draw_url_preview(canvas, page->fields[0], model->url_offset);
             } else {
                 static const char* const labels[] = {"Name", "Phone", "Email"};
                 const char* value = page->fields[model->review_field];
@@ -406,7 +428,8 @@ static bool ntag21x_write_input(InputEvent* event, void* context) {
     bool start = state == WritePageConfirm && event->key == InputKeyOk;
     bool toggle_scheme = state == WritePageConfirm && event->key == InputKeyLeft &&
                          (page->format == Ntag21xWriteUrl || link_pair(page));
-    bool next = state == WritePageConfirm && event->key == InputKeyRight && field_count(page) > 1;
+    bool next = state == WritePageConfirm && event->key == InputKeyRight &&
+                page->format != Ntag21xWriteWifi && field_count(page) > 1;
     bool scroll = state == WritePageConfirm && scroll_key && page->format != Ntag21xWriteText;
     if(start) {
         model->state = WritePageBusy;
@@ -484,7 +507,7 @@ void ntag21x_write_page_edit(
     snprintf(page->title, sizeof(page->title), "Write %s", model ? model->name : "NTAG21x");
     page->field = 0;
     page->https = true;
-    for(size_t i = 0; i < COUNT_OF(page->fields); i++) page->fields[i][0] = '\0';
+    memset(page->fields, 0, sizeof(page->fields));
     if(format == Ntag21xWriteText) {
         text_input_reset(page->input);
         text_input_set_header_text(page->input, "NDEF text");
@@ -521,6 +544,7 @@ void ntag21x_write_page_wait(Ntag21xWritePage* page) {
     furi_thread_join(page->worker);
     furi_thread_free(page->worker);
     page->worker = NULL;
+    if(page->format == Ntag21xWriteWifi) memset(page->fields[1], 0, sizeof(page->fields[1]));
 }
 
 void ntag21x_write_page_free(Ntag21xWritePage* page) {
