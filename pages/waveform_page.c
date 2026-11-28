@@ -55,6 +55,7 @@ typedef enum {
     CaptureSaving,
     CaptureReady,
     CaptureReadFailed,
+    CaptureNoMemory,
     CaptureIncomplete,
     CaptureRestoreFailed,
     CaptureOpenFailed,
@@ -70,6 +71,7 @@ typedef struct {
     uint16_t span;
     bool can_save;
     bool save_failed;
+    bool low_memory;
 } CaptureModel;
 
 struct WaveformPage {
@@ -193,7 +195,9 @@ static void capture_draw(Canvas* canvas, void* context) {
     const CaptureModel* model = context;
     canvas_clear(canvas);
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str(canvas, 4, 11, model->info->title);
+    const char* title =
+        model->state == CaptureReady && model->low_memory ? "LF: low RAM" : model->info->title;
+    canvas_draw_str(canvas, 4, 11, title);
     canvas_set_font(canvas, FontSecondary);
 
     char count[24];
@@ -217,7 +221,9 @@ static void capture_draw(Canvas* canvas, void* context) {
         draw_plot(canvas, model);
         break;
     case CaptureReadFailed:
-        canvas_draw_str(canvas, 4, 30, "Capture failed");
+    case CaptureNoMemory:
+        canvas_draw_str(
+            canvas, 4, 30, model->state == CaptureNoMemory ? "Not enough memory" : "Capture failed");
         elements_button_center(canvas, "Retry");
         break;
     case CaptureIncomplete:
@@ -270,6 +276,8 @@ static int32_t capture_worker(void* context) {
         }
         if(status == PM3_SUCCESS) {
             state = CaptureReady;
+        } else if(status == PM3_EMALLOC) {
+            state = CaptureNoMemory;
         } else if(status == LfCaptureRestoreFailed) {
             state = CaptureRestoreFailed;
         } else if(status == PM3_EPARTIAL) {
@@ -296,6 +304,9 @@ static int32_t capture_worker(void* context) {
     model->samples = page->samples;
     model->count = count;
     if(job != CaptureSaving) model->span = count;
+    if(job == CaptureReading) {
+        model->low_memory = lf && state == CaptureReady && count == LF_SHORT_CAPTURE_COUNT;
+    }
     model->can_save = state == CaptureReady &&
                       (job == CaptureReading || (job == CaptureSaving && !saved));
     model->save_failed = job == CaptureSaving && !saved;
@@ -323,7 +334,7 @@ static bool capture_input(InputEvent* event, void* context) {
         return true;
     }
     bool ready_to_capture = state == CaptureIdle || state == CaptureReadFailed ||
-                            state == CaptureIncomplete;
+                            state == CaptureNoMemory || state == CaptureIncomplete;
     if(state == CaptureReady && event->key != InputKeyOk && event->key != InputKeyBack) {
         uint16_t span = model->span;
         uint16_t start = model->start;
