@@ -456,6 +456,15 @@ static bool text_and_url(const uint8_t* data, size_t size) {
     return text_size && url_record(data + text_size, size - text_size, 0x51);
 }
 
+static bool smart_poster(const uint8_t* data, size_t size) {
+    if(short_record_size(data, size, 0xd1, "Sp") != size || size <= 5) return false;
+    const uint8_t* inner = data + 5;
+    size_t inner_size = size - 5;
+    size_t url_size = short_record_size(inner, inner_size, 0x91, "U");
+    return url_size && url_record(inner, url_size, 0x91) && url_size < inner_size &&
+           text_record_size(inner + url_size, inner_size - url_size, 0x51) == inner_size - url_size;
+}
+
 static size_t put_record(
     uint8_t* out, uint8_t flags, const char* type, const void* prefix, size_t prefix_size,
     const void* payload, size_t payload_size) {
@@ -509,15 +518,26 @@ bool type2_ndef_replace_url(uint8_t* data, size_t size, const char* address, boo
 }
 
 bool type2_ndef_replace_text_uri(
-    uint8_t* data, size_t size, const char* text, const char* address, bool https) {
+    uint8_t* data, size_t size, const char* text, const char* address, bool https, bool poster) {
     size_t text_length = strlen(text);
     size_t address_length = strlen(address);
-    if(!text_length || text_length > SHORT_TLV_MESSAGE_MAX - 12 ||
-       address_length > SHORT_TLV_MESSAGE_MAX - 12 - text_length || !printable(text) ||
+    size_t overhead = poster ? 17 : 12;
+    if(!text_length || text_length > SHORT_TLV_MESSAGE_MAX - overhead ||
+       address_length > SHORT_TLV_MESSAGE_MAX - overhead - text_length || !printable(text) ||
        !type2_ndef_url_address_valid(address)) {
         return false;
     }
     uint8_t message[SHORT_TLV_MESSAGE_MAX];
+    if(poster) {
+        // NFC Forum Smart Poster RTD wraps the URI and title in an Sp record.
+        size_t used = put_url_record(message + 5, 0x91, address, address_length, https);
+        used += put_text_record(message + 5 + used, 0x51, text, text_length);
+        message[0] = 0xd1;
+        message[1] = 2;
+        message[2] = used;
+        memcpy(message + 3, "Sp", 2);
+        return replace_message(data, size, message, used + 5, smart_poster);
+    }
     size_t used = put_text_record(message, 0x91, text, text_length);
     used += put_url_record(message + used, 0x51, address, address_length, https);
     return replace_message(data, size, message, used, text_and_url);

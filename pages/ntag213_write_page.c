@@ -22,6 +22,7 @@ typedef struct {
     size_t done;
     size_t total;
     size_t url_offset;
+    uint8_t review_field;
 } WritePageModel;
 
 typedef struct {
@@ -63,18 +64,23 @@ static const char* const text_keys[] = {
     "!$&*+, \b\r",
 };
 
+static bool link_pair(const Ntag21xWritePage* page) {
+    return page->format == Ntag21xWriteTextAndUrl || page->format == Ntag21xWriteSmartPoster;
+}
+
 static unsigned field_count(const Ntag21xWritePage* page) {
-    return page->format == Ntag21xWriteTextAndUrl ? 2 : 1;
+    return link_pair(page) ? 2 : 1;
 }
 
 static bool field_is_url(const Ntag21xWritePage* page) {
     return page->format == Ntag21xWriteUrl ||
-           (page->format == Ntag21xWriteTextAndUrl && page->field == 1);
+           (link_pair(page) && page->field == 1);
 }
 
 static const char* field_label(const Ntag21xWritePage* page) {
     if(field_is_url(page)) return "URL (hold OK for caps)";
-    return "Text (hold OK for caps)";
+    return page->format == Ntag21xWriteSmartPoster ? "Title (hold OK for caps)" :
+                                                    "Text (hold OK for caps)";
 }
 
 static const char* validate_field(const Ntag21xWritePage* page) {
@@ -298,10 +304,10 @@ static void ntag21x_write_draw(Canvas* canvas, void* context) {
                 canvas_draw_str(canvas, 4, 35, scheme);
                 draw_url_preview(canvas, page->fields[0], model->url_offset);
             } else {
-                char address[NTAG21X_URL_MAX + sizeof("https://")];
-                snprintf(address, sizeof(address), "%s%s", scheme, page->fields[1]);
-                draw_preview(canvas, page->fields[0], 35);
-                draw_url_preview(canvas, address, model->url_offset);
+                const char* label = page->format == Ntag21xWriteSmartPoster ? "Title" : "Text";
+                canvas_draw_str(canvas, 4, 35, model->review_field ? scheme : label);
+                draw_url_preview(canvas, page->fields[model->review_field], model->url_offset);
+                elements_button_right(canvas, "Next");
             }
             elements_button_left(canvas, "Mode");
         }
@@ -363,21 +369,27 @@ static bool ntag21x_write_input(InputEvent* event, void* context) {
     bool start = state == WritePageConfirm && event->key == InputKeyOk;
     bool toggle_scheme = state == WritePageConfirm && event->key == InputKeyLeft &&
                          page->format != Ntag21xWriteText;
+    bool next = state == WritePageConfirm && event->key == InputKeyRight && field_count(page) > 1;
     bool scroll = state == WritePageConfirm && scroll_key && page->format != Ntag21xWriteText;
     if(start) {
         model->state = WritePageBusy;
         model->stage = Ntag21xWriteChecking;
     } else if(toggle_scheme) {
         page->https = !page->https;
+        if(link_pair(page)) {
+            model->review_field = 1;
+            model->url_offset = 0;
+        }
+    } else if(next) {
+        model->review_field = (model->review_field + 1) % field_count(page);
+        model->url_offset = 0;
     } else if(scroll && event->key == InputKeyUp && model->url_offset) {
         model->url_offset -= URL_PREVIEW_STEP;
     } else if(scroll && event->key == InputKeyDown &&
-              model->url_offset + URL_PREVIEW_STEP <
-                  (page->format == Ntag21xWriteUrl ? strlen(page->fields[0]) :
-                      strlen(page->fields[1]) + (page->https ? 8U : 7U))) {
+              model->url_offset + URL_PREVIEW_STEP < strlen(page->fields[model->review_field])) {
         model->url_offset += URL_PREVIEW_STEP;
     }
-    view_commit_model(page->view, start || toggle_scheme || scroll);
+    view_commit_model(page->view, start || toggle_scheme || next || scroll);
 
     if(start) {
         page->worker = furi_thread_alloc_ex("Ntag21xWrite", 4096, ntag21x_write_worker, page);
@@ -388,7 +400,7 @@ static bool ntag21x_write_input(InputEvent* event, void* context) {
         page->on_done(page->context);
         return true;
     }
-    return state == WritePageBusy || toggle_scheme || scroll;
+    return state == WritePageBusy || toggle_scheme || next || scroll;
 }
 
 Ntag21xWritePage* ntag21x_write_page_alloc(
@@ -459,6 +471,7 @@ void ntag21x_write_page_confirm(Ntag21xWritePage* page) {
     WritePageModel* model = view_get_model(page->view);
     model->state = WritePageConfirm;
     model->url_offset = 0;
+    model->review_field = 0;
     view_commit_model(page->view, true);
 }
 

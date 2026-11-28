@@ -102,12 +102,13 @@ static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
     }
     case OperateWriteNtag21x:
     case OperateWriteNtag21xUrl:
-    case OperateWriteNtag21xTextAndUrl: {
+    case OperateWriteNtag21xTextAndUrl:
+    case OperateWriteNtag21xSmartPoster: {
         Ntag21xPages pages;
         if(simple_reader_page_get_live_data(
                app->simple_reader_page, &simple_reader_ntag21x, (uint8_t*)&pages)) {
             static const Ntag21xWriteFormat formats[] = {
-                Ntag21xWriteText, Ntag21xWriteUrl, Ntag21xWriteTextAndUrl,
+                Ntag21xWriteText, Ntag21xWriteUrl, Ntag21xWriteTextAndUrl, Ntag21xWriteSmartPoster,
             };
             Ntag21xWriteFormat format = formats[event - OperateWriteNtag21x];
             ntag21x_write_page_edit(app->ntag21x_write, &pages, format);
@@ -289,6 +290,9 @@ Proxmark5App* proxmark5_app_alloc() {
     submenu_add_item(app->ntag21x_actions, "Write NDEF URL", OperateWriteNtag21xUrl, fmps_cxt_menu_selected, app);
     submenu_add_item(
         app->ntag21x_actions, "Write text + URL", OperateWriteNtag21xTextAndUrl,
+        fmps_cxt_menu_selected, app);
+    submenu_add_item(
+        app->ntag21x_actions, "Write Smart Poster", OperateWriteNtag21xSmartPoster,
         fmps_cxt_menu_selected, app);
     View* actions = submenu_get_view(app->ntag21x_actions);
     view_set_previous_callback(actions, reader_details_previous_callback);

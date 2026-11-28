@@ -281,7 +281,9 @@ static bool encode_ndef(
     case Ntag21xWriteUrl:
         return type2_ndef_replace_url(data, size, values[0], https);
     case Ntag21xWriteTextAndUrl:
-        return type2_ndef_replace_text_uri(data, size, values[0], values[1], https);
+        return type2_ndef_replace_text_uri(data, size, values[0], values[1], https, false);
+    case Ntag21xWriteSmartPoster:
+        return type2_ndef_replace_text_uri(data, size, values[0], values[1], https, true);
     }
     return false;
 }

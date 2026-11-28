@@ -25,6 +25,6 @@ bool type2_ndef_url_address_valid(const char* address);
 bool type2_ndef_replace_url(uint8_t* data, size_t size, const char* address, bool https);
 
 bool type2_ndef_replace_text_uri(
-    uint8_t* data, size_t size, const char* text, const char* address, bool https);
+    uint8_t* data, size_t size, const char* text, const char* address, bool https, bool poster);
 
 #endif

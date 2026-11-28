@@ -33,6 +33,7 @@ typedef enum {
     Ntag21xWriteText,
     Ntag21xWriteUrl,
     Ntag21xWriteTextAndUrl,
+    Ntag21xWriteSmartPoster,
 } Ntag21xWriteFormat;
 
 bool ntag21x_write_can_encode(

@@ -195,18 +195,28 @@ int main(void) {
     long_address[250] = '\0';
     assert(!type2_ndef_replace_url(large_url, sizeof(large_url), long_address, true));
     uint8_t combined[257] = {0};
-    assert(type2_ndef_replace_text_uri(combined, sizeof(combined), "Hello", "a.b", true));
+    assert(type2_ndef_replace_text_uri(combined, sizeof(combined), "Hello", "a.b", true, false));
     assert(type2_ndef_read(combined, sizeof(combined), text, sizeof(text)) == Type2NdefTextAndUri);
     assert(strcmp(text, "Hello\n\nURL\nhttps://a.b") == 0);
-    assert(type2_ndef_replace_text_uri(combined, sizeof(combined), "Hi", "c.d", false));
+    assert(type2_ndef_replace_text_uri(combined, sizeof(combined), "Hi", "c.d", false, false));
     assert(type2_ndef_read(combined, sizeof(combined), text, sizeof(text)) == Type2NdefTextAndUri);
     assert(strcmp(text, "Hi\n\nURL\nhttp://c.d") == 0);
     uint8_t backup[257];
     memcpy(backup, combined, sizeof(backup));
     assert(!type2_ndef_replace_text(combined, sizeof(combined), "Other"));
     assert(!type2_ndef_replace_url(combined, sizeof(combined), "e.f", false));
-    assert(!type2_ndef_replace_text_uri(combined, 21, "Longer", "e.f", false));
+    assert(!type2_ndef_replace_text_uri(combined, 21, "Longer", "e.f", false, false));
     assert(!memcmp(combined, backup, sizeof(combined)));
+    uint8_t poster_write[257] = {0};
+    assert(type2_ndef_replace_text_uri(poster_write, sizeof(poster_write), "Title", "a.b", true, true));
+    assert(type2_ndef_read(poster_write, sizeof(poster_write), text, sizeof(text)) == Type2NdefSmartPoster);
+    assert(strcmp(text, "Title\n\nURL\nhttps://a.b") == 0);
+    assert(type2_ndef_replace_text_uri(poster_write, sizeof(poster_write), "New", "c.d", false, true));
+    assert(type2_ndef_read(poster_write, sizeof(poster_write), text, sizeof(text)) == Type2NdefSmartPoster);
+    assert(strcmp(text, "New\n\nURL\nhttp://c.d") == 0);
+    memcpy(backup, poster_write, sizeof(backup));
+    assert(!type2_ndef_replace_text_uri(poster_write, sizeof(poster_write), "X", "e.f", false, false));
+    assert(!memcmp(backup, poster_write, sizeof(backup)));
     return 0;
 }
 '''
