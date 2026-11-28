@@ -13,6 +13,7 @@ typedef enum {
     OperateSaveNtag21x,
     OperateWriteNtag21x,
     OperateWriteNtag21xUrl,
+    OperateWriteNtag21xTextAndUrl,
     OperateConfirmNtag21x,
     OperateFinishNtag21x,
     OperateImportNtag213,

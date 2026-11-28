@@ -381,31 +381,23 @@ Type2NdefResult type2_ndef_read(
     return Type2NdefEmpty;
 }
 
-static bool replace_record(
-    uint8_t* data, size_t size, uint8_t type, const uint8_t* prefix, size_t prefix_size,
-    const char* value) {
-    size_t length = strlen(value);
-    if(!length || length >= 0xff - 4 - prefix_size) return false;
-    size_t message_size = 4 + prefix_size + length;
-    size_t end = 2 + message_size + 1;
-    if(end > size) return false;
+#define SHORT_TLV_MESSAGE_MAX 254U
 
+typedef bool (*NdefMessageMatch)(const uint8_t* data, size_t size);
+
+static bool replace_message(
+    uint8_t* data, size_t size, const uint8_t* message, size_t length, NdefMessageMatch matches) {
+    if(!length || length > SHORT_TLV_MESSAGE_MAX || length + 3 > size) return false;
+    if(!data) return true;
+    size_t end = length + 3;
     size_t old_end = 0;
     if(data[0] == 0x03) {
-        size_t old_message_size = data[1];
-        old_end = 2 + old_message_size + 1;
-        if(old_end > size || data[old_end - 1] != 0xfe) return false;
-        if(old_message_size) {
-            if(old_message_size < 5 || data[2] != 0xd1 || data[3] != 1 ||
-               data[4] + 4U != old_message_size || data[5] != type) {
-                return false;
-            }
-            if(type == 'T') {
-                if((data[6] & 0xc0) || (data[6] & 0x3f) >= data[4]) return false;
-            } else if(data[4] < 2 || data[6] >= sizeof(uri_prefixes) / sizeof(uri_prefixes[0])) {
-                return false;
-            }
+        size_t old_length = data[1];
+        old_end = old_length + 3;
+        if(old_length > SHORT_TLV_MESSAGE_MAX || old_end > size || data[old_end - 1] != 0xfe) {
+            return false;
         }
+        if(old_length && !matches(data + 2, old_length)) return false;
     } else if(data[0] == 0xfe) {
         old_end = 1;
     } else {
@@ -418,20 +410,83 @@ static bool replace_record(
         if(data[i]) return false;
     }
     for(size_t i = end; i < old_end; i++) data[i] = 0;
-    const uint8_t record[] = {0x03, message_size, 0xd1, 1, prefix_size + length, type};
-    memcpy(data, record, sizeof(record));
-    memcpy(data + sizeof(record), prefix, prefix_size);
-    memcpy(data + sizeof(record) + prefix_size, value, length);
+    data[0] = 0x03;
+    data[1] = length;
+    memcpy(data + 2, message, length);
     data[end - 1] = 0xfe;
     return true;
 }
 
-bool type2_ndef_replace_text(uint8_t* data, size_t size, const char* text) {
-    for(size_t i = 0; text[i]; i++) {
-        if((unsigned char)text[i] < 0x20 || (unsigned char)text[i] > 0x7e) return false;
+static bool printable(const char* text) {
+    for(; *text; text++) {
+        if((unsigned char)*text < 0x20 || (unsigned char)*text > 0x7e) return false;
     }
+    return true;
+}
+
+static size_t short_record_size(const uint8_t* data, size_t size, uint8_t flags, const char* type) {
+    size_t type_size = strlen(type);
+    if(size < 3 + type_size || data[0] != flags || data[1] != type_size ||
+       data[2] > size - 3 - type_size || memcmp(data + 3, type, type_size)) {
+        return 0;
+    }
+    return 3 + type_size + data[2];
+}
+
+static size_t text_record_size(const uint8_t* data, size_t size, uint8_t flags) {
+    size_t length = short_record_size(data, size, flags, "T");
+    return length > 4 && !(data[4] & 0xc0) && (data[4] & 0x3f) < data[2] ? length : 0;
+}
+
+static bool url_record(const uint8_t* data, size_t size, uint8_t flags) {
+    return size >= 6 && short_record_size(data, size, flags, "U") == size &&
+           data[4] < sizeof(uri_prefixes) / sizeof(uri_prefixes[0]);
+}
+
+static bool single_text(const uint8_t* data, size_t size) {
+    return text_record_size(data, size, 0xd1) == size;
+}
+
+static bool single_url(const uint8_t* data, size_t size) {
+    return url_record(data, size, 0xd1);
+}
+
+static bool text_and_url(const uint8_t* data, size_t size) {
+    size_t text_size = text_record_size(data, size, 0x91);
+    return text_size && url_record(data + text_size, size - text_size, 0x51);
+}
+
+static size_t put_record(
+    uint8_t* out, uint8_t flags, const char* type, const void* prefix, size_t prefix_size,
+    const void* payload, size_t payload_size) {
+    size_t type_size = strlen(type);
+    out[0] = flags;
+    out[1] = type_size;
+    out[2] = prefix_size + payload_size;
+    memcpy(out + 3, type, type_size);
+    if(prefix_size) memcpy(out + 3 + type_size, prefix, prefix_size);
+    memcpy(out + 3 + type_size + prefix_size, payload, payload_size);
+    return 3 + type_size + prefix_size + payload_size;
+}
+
+static size_t put_text_record(uint8_t* out, uint8_t flags, const char* text, size_t length) {
     static const uint8_t prefix[] = {2, 'e', 'n'};
-    return replace_record(data, size, 'T', prefix, sizeof(prefix), text);
+    return put_record(out, flags, "T", prefix, sizeof(prefix), text, length);
+}
+
+static size_t put_url_record(
+    uint8_t* out, uint8_t flags, const char* address, size_t length, bool https) {
+    // NFC Forum URI RTD prefix codes, also in PM3 client/src/nfc/ndef.c.
+    const uint8_t prefix[] = {https ? 0x04 : 0x03};
+    return put_record(out, flags, "U", prefix, sizeof(prefix), address, length);
+}
+
+bool type2_ndef_replace_text(uint8_t* data, size_t size, const char* text) {
+    size_t length = strlen(text);
+    if(!length || length > SHORT_TLV_MESSAGE_MAX - 7 || !printable(text)) return false;
+    uint8_t message[SHORT_TLV_MESSAGE_MAX];
+    size_t used = put_text_record(message, 0xd1, text, length);
+    return replace_message(data, size, message, used, single_text);
 }
 
 bool type2_ndef_url_address_valid(const char* address) {
@@ -446,8 +501,24 @@ bool type2_ndef_url_address_valid(const char* address) {
 }
 
 bool type2_ndef_replace_url(uint8_t* data, size_t size, const char* address, bool https) {
-    if(!type2_ndef_url_address_valid(address)) return false;
-    // NFC Forum URI RTD prefix codes, also in PM3 client/src/nfc/ndef.c.
-    const uint8_t prefix[] = {https ? 0x04 : 0x03};
-    return replace_record(data, size, 'U', prefix, sizeof(prefix), address);
+    size_t length = strlen(address);
+    if(length > SHORT_TLV_MESSAGE_MAX - 5 || !type2_ndef_url_address_valid(address)) return false;
+    uint8_t message[SHORT_TLV_MESSAGE_MAX];
+    size_t used = put_url_record(message, 0xd1, address, length, https);
+    return replace_message(data, size, message, used, single_url);
+}
+
+bool type2_ndef_replace_text_uri(
+    uint8_t* data, size_t size, const char* text, const char* address, bool https) {
+    size_t text_length = strlen(text);
+    size_t address_length = strlen(address);
+    if(!text_length || text_length > SHORT_TLV_MESSAGE_MAX - 12 ||
+       address_length > SHORT_TLV_MESSAGE_MAX - 12 - text_length || !printable(text) ||
+       !type2_ndef_url_address_valid(address)) {
+        return false;
+    }
+    uint8_t message[SHORT_TLV_MESSAGE_MAX];
+    size_t used = put_text_record(message, 0x91, text, text_length);
+    used += put_url_record(message + used, 0x51, address, address_length, https);
+    return replace_message(data, size, message, used, text_and_url);
 }

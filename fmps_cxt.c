@@ -101,16 +101,19 @@ static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
         return true;
     }
     case OperateWriteNtag21x:
-    case OperateWriteNtag21xUrl: {
+    case OperateWriteNtag21xUrl:
+    case OperateWriteNtag21xTextAndUrl: {
         Ntag21xPages pages;
         if(simple_reader_page_get_live_data(
                app->simple_reader_page, &simple_reader_ntag21x, (uint8_t*)&pages)) {
-            Ntag21xWriteFormat format =
-                event == OperateWriteNtag21xUrl ? Ntag21xWriteHttps : Ntag21xWriteText;
+            static const Ntag21xWriteFormat formats[] = {
+                Ntag21xWriteText, Ntag21xWriteUrl, Ntag21xWriteTextAndUrl,
+            };
+            Ntag21xWriteFormat format = formats[event - OperateWriteNtag21x];
             ntag21x_write_page_edit(app->ntag21x_write, &pages, format);
             view_dispatcher_switch_to_view(
                 app->view_dispatcher,
-                event == OperateWriteNtag21xUrl ? Ntag21xUrlViewId : Ntag21xTextViewId);
+                format == Ntag21xWriteText ? Ntag21xTextViewId : Ntag21xUrlViewId);
         }
         return true;
     }
@@ -284,6 +287,9 @@ Proxmark5App* proxmark5_app_alloc() {
     submenu_add_item(app->ntag21x_actions, "Save dump", OperateSaveNtag21x, fmps_cxt_menu_selected, app);
     submenu_add_item(app->ntag21x_actions, "Write NDEF text", OperateWriteNtag21x, fmps_cxt_menu_selected, app);
     submenu_add_item(app->ntag21x_actions, "Write NDEF URL", OperateWriteNtag21xUrl, fmps_cxt_menu_selected, app);
+    submenu_add_item(
+        app->ntag21x_actions, "Write text + URL", OperateWriteNtag21xTextAndUrl,
+        fmps_cxt_menu_selected, app);
     View* actions = submenu_get_view(app->ntag21x_actions);
     view_set_previous_callback(actions, reader_details_previous_callback);
     view_dispatcher_add_view(app->view_dispatcher, Ntag21xActionsViewId, actions);

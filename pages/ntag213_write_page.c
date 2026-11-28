@@ -42,9 +42,11 @@ struct Ntag21xWritePage {
     Ntag21xPages tag;
     Ntag21xWriteFormat format;
     size_t value_max;
+    uint8_t field;
+    bool https;
     char title[16];
     char uid[2 * NTAG21X_UID_BYTES + 1];
-    char text[NTAG21X_URL_MAX + 1];
+    char fields[3][NTAG21X_URL_MAX + 1];
 };
 
 static const char* const url_keys[] = {
@@ -54,13 +56,48 @@ static const char* const url_keys[] = {
     "!$&'()*+,;=\b\r",
 };
 
+static const char* const text_keys[] = {
+    "qwertyuiop012345",
+    "asdfghjkl6789.-_",
+    "zxcvbnm~:/?#[]@%",
+    "!$&*+, \b\r",
+};
+
+static unsigned field_count(const Ntag21xWritePage* page) {
+    return page->format == Ntag21xWriteTextAndUrl ? 2 : 1;
+}
+
+static bool field_is_url(const Ntag21xWritePage* page) {
+    return page->format == Ntag21xWriteUrl ||
+           (page->format == Ntag21xWriteTextAndUrl && page->field == 1);
+}
+
+static const char* field_label(const Ntag21xWritePage* page) {
+    if(field_is_url(page)) return "URL (hold OK for caps)";
+    return "Text (hold OK for caps)";
+}
+
+static const char* validate_field(const Ntag21xWritePage* page) {
+    const char* value = page->fields[page->field];
+    if(field_is_url(page)) {
+        return type2_ndef_url_address_valid(value) ? NULL : "Check the URL host/path";
+    }
+    return *value ? NULL : "Enter text";
+}
+
+static void field_values(const Ntag21xWritePage* page, const char* values[3]) {
+    for(size_t i = 0; i < COUNT_OF(page->fields); i++) values[i] = page->fields[i];
+}
+
 static void url_input_draw(Canvas* canvas, void* context) {
     const UrlInputModel* model = context;
     canvas_clear(canvas);
     canvas_set_font(canvas, FontSecondary);
-    canvas_draw_str(canvas, 3, 9, model->notice ? model->notice : "URL (hold OK for caps)");
+    const Ntag21xWritePage* page = model->page;
+    const char* const* keys = field_is_url(page) ? url_keys : text_keys;
+    canvas_draw_str(canvas, 3, 9, model->notice ? model->notice : field_label(page));
     elements_slightly_rounded_frame(canvas, 1, 12, 126, 13);
-    const char* text = model->page->text;
+    const char* text = page->fields[page->field];
     while(*text && canvas_string_width(canvas, text) > 115) text++;
     canvas_draw_str(canvas, 4, 22, text);
     canvas_draw_line(canvas, 4 + canvas_string_width(canvas, text), 15,
@@ -70,16 +107,17 @@ static void url_input_draw(Canvas* canvas, void* context) {
     for(size_t row = 0; row < COUNT_OF(url_keys); row++) {
         uint8_t x = 0;
         uint8_t y = 34 + row * 9;
-        for(size_t column = 0; url_keys[row][column]; column++) {
-            char key = url_keys[row][column];
+        for(size_t column = 0; keys[row][column]; column++) {
+            char key = keys[row][column];
             bool selected = row == model->row && column == model->column;
-            uint8_t width = (key == '\r' || key == '\b') ? 20 : 8;
+            uint8_t width = (key == '\r' || key == '\b' || key == ' ') ? 20 : 8;
             if(selected) {
                 canvas_draw_box(canvas, x, y - 7, width, 9);
                 canvas_set_color(canvas, ColorWhite);
             }
-            if(key == '\b' || key == '\r') {
-                canvas_draw_str(canvas, x + 2, y, key == '\b' ? "Del" : "OK");
+            if(key == '\b' || key == '\r' || key == ' ') {
+                const char* label = key == '\b' ? "Del" : (key == '\r' ? "OK" : "Sp");
+                canvas_draw_str(canvas, x + 2, y, label);
             } else {
                 canvas_draw_glyph(canvas, x + 1, y, key);
             }
@@ -97,7 +135,9 @@ static bool url_input_key(InputEvent* event, void* context) {
     }
     Ntag21xWritePage* page = context;
     UrlInputModel* model = view_get_model(page->url_input);
-    size_t width = strlen(url_keys[model->row]);
+    const char* const* keys = field_is_url(page) ? url_keys : text_keys;
+    size_t width = strlen(keys[model->row]);
+    char* value = page->fields[page->field];
     bool accepted = false;
     bool handled = true;
     switch(event->key) {
@@ -114,28 +154,49 @@ static bool url_input_key(InputEvent* event, void* context) {
         model->row = (model->row + 1) % COUNT_OF(url_keys);
         break;
     case InputKeyOk: {
-        char key = url_keys[model->row][model->column];
-        size_t length = strlen(page->text);
+        char key = keys[model->row][model->column];
+        size_t length = strlen(value);
         model->notice = NULL;
         if(key == '\r') {
-            accepted = type2_ndef_url_address_valid(page->text);
-            if(!accepted) model->notice = "Check the URL host/path";
+            model->notice = validate_field(page);
+            if(model->notice) break;
+            if(page->field + 1U < field_count(page)) {
+                page->field++;
+                model->row = 0;
+                model->column = 0;
+            } else {
+                const char* values[3];
+                field_values(page, values);
+                accepted = ntag21x_write_can_encode(&page->tag, page->format, values, page->https);
+                if(!accepted) model->notice = "Record too big for tag";
+            }
         } else if(key == '\b') {
-            if(length) page->text[length - 1] = '\0';
+            if(length) value[length - 1] = '\0';
         } else if(length < page->value_max) {
             if(event->type == InputTypeLong && key >= 'a' && key <= 'z') key -= 'a' - 'A';
-            page->text[length] = key;
-            page->text[length + 1] = '\0';
+            value[length] = key;
+            value[length + 1] = '\0';
         } else {
-            model->notice = "URL is at the tag limit";
+            model->notice = "Field is at its limit";
         }
         break;
     }
+    case InputKeyBack:
+        if(page->field) {
+            page->field--;
+            model->row = 0;
+            model->column = 0;
+            model->notice = NULL;
+        } else {
+            handled = false;
+        }
+        break;
     default:
         handled = false;
         break;
     }
-    model->column = MIN(model->column, strlen(url_keys[model->row]) - 1);
+    keys = field_is_url(page) ? url_keys : text_keys;
+    model->column = MIN(model->column, strlen(keys[model->row]) - 1);
     view_commit_model(page->url_input, handled);
     if(accepted) page->on_text(page->context);
     return handled;
@@ -229,12 +290,19 @@ static void ntag21x_write_draw(Canvas* canvas, void* context) {
     switch(model->state) {
     case WritePageConfirm:
         if(page->format == Ntag21xWriteText) {
-            draw_preview(canvas, page->text, 35);
+            draw_preview(canvas, page->fields[0], 35);
             canvas_draw_str(canvas, 4, 46, "Replace NDEF text?");
         } else {
-            bool https = page->format == Ntag21xWriteHttps;
-            canvas_draw_str(canvas, 4, 35, https ? "https://" : "http://");
-            draw_url_preview(canvas, page->text, model->url_offset);
+            const char* scheme = page->https ? "https://" : "http://";
+            if(page->format == Ntag21xWriteUrl) {
+                canvas_draw_str(canvas, 4, 35, scheme);
+                draw_url_preview(canvas, page->fields[0], model->url_offset);
+            } else {
+                char address[NTAG21X_URL_MAX + sizeof("https://")];
+                snprintf(address, sizeof(address), "%s%s", scheme, page->fields[1]);
+                draw_preview(canvas, page->fields[0], 35);
+                draw_url_preview(canvas, address, model->url_offset);
+            }
             elements_button_left(canvas, "Mode");
         }
         elements_button_center(canvas, "Write");
@@ -272,8 +340,10 @@ static void ntag21x_write_progress(
 static int32_t ntag21x_write_worker(void* context) {
     Ntag21xWritePage* page = context;
     bool cleanup_ok;
+    const char* values[3];
+    field_values(page, values);
     Ntag21xWriteResult result = ntag21x_write_ndef(
-        &page->tag, page->format, page->text, ntag21x_write_progress, page, &cleanup_ok);
+        &page->tag, page->format, values, page->https, ntag21x_write_progress, page, &cleanup_ok);
     WritePageModel* model = view_get_model(page->view);
     model->state = WritePageResult;
     model->result = result;
@@ -298,11 +368,13 @@ static bool ntag21x_write_input(InputEvent* event, void* context) {
         model->state = WritePageBusy;
         model->stage = Ntag21xWriteChecking;
     } else if(toggle_scheme) {
-        page->format = page->format == Ntag21xWriteHttps ? Ntag21xWriteHttp : Ntag21xWriteHttps;
+        page->https = !page->https;
     } else if(scroll && event->key == InputKeyUp && model->url_offset) {
         model->url_offset -= URL_PREVIEW_STEP;
     } else if(scroll && event->key == InputKeyDown &&
-              model->url_offset + URL_PREVIEW_STEP < strlen(page->text)) {
+              model->url_offset + URL_PREVIEW_STEP <
+                  (page->format == Ntag21xWriteUrl ? strlen(page->fields[0]) :
+                      strlen(page->fields[1]) + (page->https ? 8U : 7U))) {
         model->url_offset += URL_PREVIEW_STEP;
     }
     view_commit_model(page->view, start || toggle_scheme || scroll);
@@ -361,13 +433,15 @@ void ntag21x_write_page_edit(
     page->value_max = ntag21x_write_value_max(tag, format);
     const Ntag21xModel* model = ntag21x_model_for_version(tag->version);
     snprintf(page->title, sizeof(page->title), "Write %s", model ? model->name : "NTAG21x");
-    page->text[0] = '\0';
+    page->field = 0;
+    page->https = true;
+    for(size_t i = 0; i < COUNT_OF(page->fields); i++) page->fields[i][0] = '\0';
     if(format == Ntag21xWriteText) {
         text_input_reset(page->input);
         text_input_set_header_text(page->input, "NDEF text");
         text_input_set_minimum_length(page->input, 1);
         text_input_set_result_callback(
-            page->input, page->on_text, page->context, page->text, page->value_max + 1, false);
+            page->input, page->on_text, page->context, page->fields[0], page->value_max + 1, false);
     } else {
         UrlInputModel* model = view_get_model(page->url_input);
         *model = (UrlInputModel){.page = page};

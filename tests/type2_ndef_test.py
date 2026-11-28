@@ -194,6 +194,19 @@ int main(void) {
     long_address[249] = 'a';
     long_address[250] = '\0';
     assert(!type2_ndef_replace_url(large_url, sizeof(large_url), long_address, true));
+    uint8_t combined[257] = {0};
+    assert(type2_ndef_replace_text_uri(combined, sizeof(combined), "Hello", "a.b", true));
+    assert(type2_ndef_read(combined, sizeof(combined), text, sizeof(text)) == Type2NdefTextAndUri);
+    assert(strcmp(text, "Hello\n\nURL\nhttps://a.b") == 0);
+    assert(type2_ndef_replace_text_uri(combined, sizeof(combined), "Hi", "c.d", false));
+    assert(type2_ndef_read(combined, sizeof(combined), text, sizeof(text)) == Type2NdefTextAndUri);
+    assert(strcmp(text, "Hi\n\nURL\nhttp://c.d") == 0);
+    uint8_t backup[257];
+    memcpy(backup, combined, sizeof(backup));
+    assert(!type2_ndef_replace_text(combined, sizeof(combined), "Other"));
+    assert(!type2_ndef_replace_url(combined, sizeof(combined), "e.f", false));
+    assert(!type2_ndef_replace_text_uri(combined, 21, "Longer", "e.f", false));
+    assert(!memcmp(combined, backup, sizeof(combined)));
     return 0;
 }
 '''

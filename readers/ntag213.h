@@ -31,9 +31,12 @@ bool ntag21x_pages_valid(const Ntag21xPages* pages);
 
 typedef enum {
     Ntag21xWriteText,
-    Ntag21xWriteHttps,
-    Ntag21xWriteHttp,
+    Ntag21xWriteUrl,
+    Ntag21xWriteTextAndUrl,
 } Ntag21xWriteFormat;
+
+bool ntag21x_write_can_encode(
+    const Ntag21xPages* pages, Ntag21xWriteFormat format, const char* const values[3], bool https);
 
 size_t ntag21x_write_value_max(const Ntag21xPages* pages, Ntag21xWriteFormat format);
 
@@ -59,7 +62,8 @@ typedef void (*Ntag21xWriteProgress)(
 Ntag21xWriteResult ntag21x_write_ndef(
     const Ntag21xPages* expected,
     Ntag21xWriteFormat format,
-    const char* value,
+    const char* const values[3],
+    bool https,
     Ntag21xWriteProgress progress,
     void* context,
     bool* cleanup_ok);

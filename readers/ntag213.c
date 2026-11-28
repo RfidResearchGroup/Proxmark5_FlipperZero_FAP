@@ -272,6 +272,29 @@ size_t ntag21x_write_value_max(const Ntag21xPages* pages, Ntag21xWriteFormat for
                                       MIN(available - NTAG21X_URL_OVERHEAD, NTAG21X_URL_MAX);
 }
 
+static bool encode_ndef(
+    uint8_t* data, size_t size, Ntag21xWriteFormat format,
+    const char* const values[3], bool https) {
+    switch(format) {
+    case Ntag21xWriteText:
+        return type2_ndef_replace_text(data, size, values[0]);
+    case Ntag21xWriteUrl:
+        return type2_ndef_replace_url(data, size, values[0], https);
+    case Ntag21xWriteTextAndUrl:
+        return type2_ndef_replace_text_uri(data, size, values[0], values[1], https);
+    }
+    return false;
+}
+
+bool ntag21x_write_can_encode(
+    const Ntag21xPages* pages, Ntag21xWriteFormat format, const char* const values[3], bool https) {
+    const Ntag21xModel* model = ntag21x_model_for_version(pages->version);
+    if(!model) return false;
+    const uint8_t* user = pages->bytes + NTAG21X_USER_START * NTAG21X_PAGE_BYTES;
+    return encode_ndef(NULL, model->cc_size * 8U - ntag21x_ndef_offset(model, user), format,
+                       values, https);
+}
+
 static bool ntag21x_write_page(uint8_t page, const uint8_t* bytes, PacketResponseNG* reply) {
     // NXP NTAG21x WRITE (A2h), also used by mifare_ultra_writeblock() in PM3 armsrc/mifareutil.c.
     uint8_t request[2 + NTAG21X_PAGE_BYTES] = {0xa2, page};
@@ -285,7 +308,8 @@ static Ntag21xWriteResult ntag21x_write_selected(
     const Ntag21xModel* model,
     const Ntag21xPages* expected,
     Ntag21xWriteFormat format,
-    const char* value,
+    const char* const values[3],
+    bool https,
     Ntag21xWriteProgress progress,
     void* context,
     uint8_t* current,
@@ -316,10 +340,7 @@ static Ntag21xWriteResult ntag21x_write_selected(
     }
     uint8_t* ndef = new_user + ndef_offset;
     size_t available = ndef_size - ndef_offset;
-    bool encoded = format == Ntag21xWriteText ?
-                       type2_ndef_replace_text(ndef, available, value) :
-                       type2_ndef_replace_url(ndef, available, value, format == Ntag21xWriteHttps);
-    if(!encoded) return Ntag21xWriteUnsupported;
+    if(!encode_ndef(ndef, available, format, values, https)) return Ntag21xWriteUnsupported;
     if(!memcmp(old_user, new_user, ndef_size)) return Ntag21xWriteVerified;
 
     size_t publish = ndef_offset / NTAG21X_PAGE_BYTES * NTAG21X_PAGE_BYTES;
@@ -364,7 +385,8 @@ static Ntag21xWriteResult ntag21x_write_selected(
 Ntag21xWriteResult ntag21x_write_ndef(
     const Ntag21xPages* expected,
     Ntag21xWriteFormat format,
-    const char* value,
+    const char* const values[3],
+    bool https,
     Ntag21xWriteProgress progress,
     void* context,
     bool* cleanup_ok) {
@@ -392,7 +414,8 @@ Ntag21xWriteResult ntag21x_write_ndef(
                 model,
                 expected,
                 format,
-                value,
+                values,
+                https,
                 progress,
                 context,
                 workspace,
