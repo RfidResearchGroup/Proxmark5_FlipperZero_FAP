@@ -77,7 +77,7 @@ static void simple_reader_draw(Canvas* canvas, void* context) {
         canvas_draw_str(canvas, 4, 27, line);
         break;
     }
-    if(!model->saved) elements_button_center(canvas, "Read again");
+    if(!model->saved) elements_button_center(canvas, "Scan");
     if(model->status == PM3_SUCCESS) {
         if(model->reader->format_details) {
             elements_button_right(canvas, "Data");
