@@ -14,6 +14,7 @@ typedef enum {
     OperateOpenStatus,
     OperateOpenAntennaCheck,
     OperateOpenLiveVoltage,
+    OperateOpenReport,
     OperateSimpleReaderFirst,
 } OperateAction;
 

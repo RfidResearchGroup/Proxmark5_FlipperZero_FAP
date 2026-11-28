@@ -44,6 +44,10 @@ void SendCommandOLD(
     size_t len);
 bool SendCommandNG(uint16_t cmd, uint8_t* data, size_t len);
 
+// Capture debug print lines into the caller's buffer until capture_end.
+bool proxmark5_frame_capture_start(char* buffer, size_t capacity);
+void proxmark5_frame_capture_end(bool* truncated);
+
 void SendCommandMIX(
     uint64_t cmd,
     uint64_t arg0,
