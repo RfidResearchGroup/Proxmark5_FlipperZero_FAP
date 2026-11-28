@@ -22,6 +22,7 @@ OperatePage* operate_page_create(SubmenuItemCallback callback, void* context) {
     submenu_set_header(operate_page->hardware_submenu, "Hardware");
     submenu_add_item(operate_page->hardware_submenu, "Hardware Status", OperateOpenStatus, callback, context);
     submenu_add_item(operate_page->hardware_submenu, "Antenna Check", OperateOpenAntennaCheck, callback, context);
+    submenu_add_item(operate_page->hardware_submenu, "BWM Power Settings", OperateOpenBwmPower, callback, context);
     return operate_page;
 }
 
