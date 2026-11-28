@@ -17,7 +17,7 @@ void* lf_capture_alloc(size_t size) {
     return samples;
 }
 
-static int get_sampling_config(sample_config* config) {
+int lf_sampling_get_config(sample_config* config) {
     PacketResponseNG reply;
     if(!SendCommandNG(CMD_LF_SAMPLING_GET_CONFIG, NULL, 0)) return PM3_EIO;
     if(!WaitForResponseTimeout(CMD_LF_SAMPLING_GET_CONFIG, &reply, LF_CONFIG_TIMEOUT_MS)) {
@@ -33,7 +33,7 @@ static bool same_sampling_config(const sample_config* left, const sample_config*
     return memcmp(left, right, offsetof(sample_config, verbose)) == 0;
 }
 
-static int set_sampling_config(const sample_config* config) {
+int lf_sampling_set_config(const sample_config* config) {
     // The verbose flag requests debug replies and is not stored by SET_CONFIG.
     sample_config request = *config;
     request.verbose = false;
@@ -43,7 +43,7 @@ static int set_sampling_config(const sample_config* config) {
     // SET_CONFIG has no reply. Wait for a fresh echo before verifying it.
     if(!proxmark5_frame_synchronize()) return PM3_ETIMEOUT;
     sample_config actual;
-    int status = get_sampling_config(&actual);
+    int status = lf_sampling_get_config(&actual);
     if(status != PM3_SUCCESS) return status;
     return same_sampling_config(&actual, config) ? PM3_SUCCESS : PM3_ESOFT;
 }
@@ -66,7 +66,7 @@ static int capture_samples(uint32_t count) {
 
 int lf_capture_samples(uint32_t count) {
     sample_config previous;
-    int status = get_sampling_config(&previous);
+    int status = lf_sampling_get_config(&previous);
     if(status != PM3_SUCCESS) return status;
 
     sample_config config = previous;
@@ -76,12 +76,12 @@ int lf_capture_samples(uint32_t count) {
     config.trigger_threshold = 0;
     config.samples_to_skip = 0;
     const bool changed = !same_sampling_config(&config, &previous);
-    if(changed) status = set_sampling_config(&config);
+    if(changed) status = lf_sampling_set_config(&config);
     if(status == PM3_SUCCESS) status = capture_samples(count);
     if(changed) {
         const volatile bool* cancel = proxmark5_frame_set_operation_cancel(NULL);
-        bool restored = set_sampling_config(&previous) == PM3_SUCCESS ||
-                        set_sampling_config(&previous) == PM3_SUCCESS;
+        bool restored = lf_sampling_set_config(&previous) == PM3_SUCCESS ||
+                        lf_sampling_set_config(&previous) == PM3_SUCCESS;
         proxmark5_frame_set_operation_cancel(cancel);
         if(!restored) return LfCaptureRestoreFailed;
     }

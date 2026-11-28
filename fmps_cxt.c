@@ -44,6 +44,21 @@ static void fmps_cxt_home_selected(void* context, MainPageChoice choice) {
     fmps_cxt_menu_selected(context, actions[choice]);
 }
 
+static uint32_t hardware_menu_previous_callback(void* context);
+
+static uint32_t hardware_hf_previous_callback(void* context) {
+    UNUSED(context);
+    return HardwareHfMenuViewId;
+}
+
+static void open_hardware_rf(Proxmark5App* app, HardwareRfMode mode) {
+    View* view = hardware_rf_page_view(app->hardware_rf_page);
+    view_set_previous_callback(
+        view, mode == HardwareRfFrequency ? hardware_menu_previous_callback : hardware_hf_previous_callback);
+    hardware_rf_page_open(app->hardware_rf_page, mode);
+    view_dispatcher_switch_to_view(app->view_dispatcher, HardwareRfViewId);
+}
+
 static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
     Proxmark5App* app = context;
 
@@ -74,6 +89,18 @@ static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
         return true;
     case OperateOpenHardware:
         view_dispatcher_switch_to_view(app->view_dispatcher, HardwareMenuViewId);
+        return true;
+    case OperateOpenHardwareHf:
+        view_dispatcher_switch_to_view(app->view_dispatcher, HardwareHfMenuViewId);
+        return true;
+    case OperateHfRxThreshold:
+        open_hardware_rf(app, HardwareRfThreshold);
+        return true;
+    case OperateHfReadTest:
+        open_hardware_rf(app, HardwareRfReadTest);
+        return true;
+    case OperateLfFrequency:
+        open_hardware_rf(app, HardwareRfFrequency);
         return true;
     case OperateReadHitag2:
         view_dispatcher_switch_to_view(app->view_dispatcher, ReadHitag2PageViewId);
@@ -177,6 +204,12 @@ Proxmark5App* proxmark5_app_alloc() {
     view_set_previous_callback(hardware_menu, operate_page_previous_callback);
     view_dispatcher_add_view(app->view_dispatcher, HardwareMenuViewId, hardware_menu);
 
+    View* hardware_hf_menu = submenu_get_view(app->operate_page->hardware_hf_submenu);
+    view_set_previous_callback(hardware_hf_menu, hardware_menu_previous_callback);
+    view_dispatcher_add_view(app->view_dispatcher, HardwareHfMenuViewId, hardware_hf_menu);
+    app->hardware_rf_page = hardware_rf_page_alloc();
+    view_dispatcher_add_view(app->view_dispatcher, HardwareRfViewId, hardware_rf_page_view(app->hardware_rf_page));
+
     View* saved_menu = submenu_get_view(app->operate_page->saved_submenu);
     view_set_previous_callback(saved_menu, operate_page_previous_callback);
     view_dispatcher_add_view(app->view_dispatcher, SavedMenuViewId, saved_menu);
@@ -249,6 +282,7 @@ void proxmark5_app_free(Proxmark5App* app) {
     status_page_stop_worker(app->status_page);
     antenna_check_page_stop_worker(app->antenna_check_page);
     live_voltage_page_stop_worker(app->live_voltage_page);
+    hardware_rf_page_stop_worker(app->hardware_rf_page);
     simple_reader_page_stop_worker(app->simple_reader_page);
 
     view_dispatcher_remove_view(app->view_dispatcher, SimpleReaderPageViewId);
@@ -260,6 +294,9 @@ void proxmark5_app_free(Proxmark5App* app) {
 
     view_dispatcher_remove_view(app->view_dispatcher, MainPageViewId);
     view_dispatcher_remove_view(app->view_dispatcher, OperatePageViewId);
+    view_dispatcher_remove_view(app->view_dispatcher, HardwareRfViewId);
+    hardware_rf_page_free(app->hardware_rf_page);
+    view_dispatcher_remove_view(app->view_dispatcher, HardwareHfMenuViewId);
     view_dispatcher_remove_view(app->view_dispatcher, HardwareMenuViewId);
     view_dispatcher_remove_view(app->view_dispatcher, ReadHitag2PageViewId);
     view_dispatcher_remove_view(app->view_dispatcher, ReadHf14aPageViewId);

@@ -14,12 +14,17 @@ typedef enum {
     OperateOpenStatus,
     OperateOpenAntennaCheck,
     OperateOpenLiveVoltage,
+    OperateOpenHardwareHf,
+    OperateHfRxThreshold,
+    OperateHfReadTest,
+    OperateLfFrequency,
     OperateSimpleReaderFirst,
 } OperateAction;
 
 typedef struct {
     Submenu* submenu;
     Submenu* hardware_submenu;
+    Submenu* hardware_hf_submenu;
     Submenu* saved_submenu;
 } OperatePage;
 
