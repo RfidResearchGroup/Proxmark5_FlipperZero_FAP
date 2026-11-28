@@ -28,7 +28,7 @@ typedef struct {
     void (*format_details)(const uint8_t* data, FuriString* text);
 } SimpleReader;
 
-extern const SimpleReader simple_reader_ntag213;
+extern const SimpleReader simple_reader_ntag21x;
 extern const SimpleReader* const simple_readers[];
 extern const size_t simple_reader_count;
 

@@ -1,100 +1,166 @@
 #include <furi.h>
 #include <nfc/helpers/iso14443_crc.h>
-#include "bigbuf.h"
 #include "../pages/saved_ntag213.h"
 #include "ntag213.h"
 #include "proxmark5_frame.h"
 #include "simple_readers.h"
 #include "type2_ndef.h"
 
-#define NTAG213_USER_START 4U
-#define NTAG213_USER_BYTES ((NTAG213_READ_PAGES - NTAG213_USER_START) * NTAG213_PAGE_BYTES)
-#define NTAG213_TIMEOUT_MS 2500U
-const uint8_t ntag213_version[NTAG213_VERSION_BYTES] = {
-    0x00, 0x04, 0x04, 0x02, 0x01, 0x00, 0x0f, 0x03};
+#define NTAG21X_USER_START 4U
+#define NTAG21X_MAX_USER_BYTES ((NTAG21X_MAX_READ_PAGES - NTAG21X_USER_START) * NTAG21X_PAGE_BYTES)
+#define NTAG21X_TIMEOUT_MS 2500U
+#define NTAG21X_SELECT_ATTEMPTS 10U
+#define NTAG21X_VERSION_TIMEOUT_ETU 2100U // About 20 ms.
+#define NTAG21X_FAST_READ_PAGES 42U
+#define NTAG21X_FAST_READ_ATTEMPTS 4U
 
-void ntag213_pages_uid(const Ntag213Pages* pages, uint8_t uid[NTAG213_UID_BYTES]) {
-    memcpy(uid, pages->bytes, 3);
-    memcpy(uid + 3, pages->bytes + NTAG213_PAGE_BYTES, 4);
+static const Ntag21xModel models[] = {
+    {"NTAG213", {0x00, 0x04, 0x04, 0x02, 0x01, 0x00, 0x0f, 0x03}, 40, 45},
+    {"NTAG215", {0x00, 0x04, 0x04, 0x02, 0x01, 0x00, 0x11, 0x03}, 130, 135},
+    {"NTAG216", {0x00, 0x04, 0x04, 0x02, 0x01, 0x00, 0x13, 0x03}, NTAG21X_MAX_READ_PAGES, 231},
+};
+
+const Ntag21xModel* ntag21x_model_for_version(const uint8_t version[NTAG21X_VERSION_BYTES]) {
+    for(size_t i = 0; i < COUNT_OF(models); i++) {
+        if(memcmp(version, models[i].version, NTAG21X_VERSION_BYTES) == 0) return &models[i];
+    }
+    return NULL;
 }
 
-bool ntag213_pages_valid(const Ntag213Pages* pages) {
+void ntag21x_pages_uid(const Ntag21xPages* pages, uint8_t uid[NTAG21X_UID_BYTES]) {
+    memcpy(uid, pages->bytes, 3);
+    memcpy(uid + 3, pages->bytes + NTAG21X_PAGE_BYTES, 4);
+}
+
+bool ntag21x_pages_valid(const Ntag21xPages* pages) {
     const uint8_t* b = pages->bytes;
     return b[3] == (0x88 ^ b[0] ^ b[1] ^ b[2]) && b[8] == (b[4] ^ b[5] ^ b[6] ^ b[7]);
 }
 
-static int read_reply(uint16_t cmd, PacketResponseNG* reply) {
-    if(!WaitForResponseTimeout(cmd, reply, NTAG213_TIMEOUT_MS)) return PM3_ETIMEOUT;
+static int ntag21x_link_error(int status) {
+    return proxmark5_frame_operation_cancelled() ? PM3_EOPABORTED : status;
+}
+
+static int ntag21x_transceive(void* request, size_t length, PacketResponseNG* reply) {
+    if(proxmark5_frame_operation_cancelled()) return PM3_EOPABORTED;
+    clearCommandBuffer();
+    if(!SendCommandNG(CMD_HF_ISO14443A_READER, request, length)) return ntag21x_link_error(PM3_EIO);
+    if(!WaitForResponseTimeout(CMD_HF_ISO14443A_READER, reply, NTAG21X_TIMEOUT_MS)) {
+        return ntag21x_link_error(PM3_ETIMEOUT);
+    }
     return reply->status;
 }
 
-static int ntag213_select(uint8_t uid[NTAG213_UID_BYTES], PacketResponseNG* reply) {
-    uint8_t request[sizeof(iso14a_raw_cmd_t) + 1] = {0};
+static bool ntag21x_crc_valid(const uint8_t* bytes, size_t length) {
+    BitBuffer* frame = bit_buffer_alloc(length);
+    bit_buffer_copy_bytes(frame, bytes, length);
+    bool valid = iso14443_crc_check(Iso14443CrcTypeA, frame);
+    bit_buffer_free(frame);
+    return valid;
+}
+
+static int ntag21x_raw(
+    const uint8_t* data, size_t length, uint32_t timeout_etu, PacketResponseNG* reply) {
+    uint8_t request[sizeof(iso14a_raw_cmd_t) + 2 + NTAG21X_PAGE_BYTES] = {0};
+    furi_assert(length <= sizeof(request) - sizeof(iso14a_raw_cmd_t));
     iso14a_raw_cmd_t* command = (iso14a_raw_cmd_t*)request;
-    command->flags = ISO14A_CONNECT | ISO14A_RAW | ISO14A_APPEND_CRC |
-                     ISO14A_NO_RATS | ISO14A_CLEARTRACE;
-    command->len = 1;
-    command->data[0] = 0x60; // GET_VERSION
-    clearCommandBuffer();
-    if(!SendCommandNG(CMD_HF_ISO14443A_READER, request, sizeof(request))) {
-        return PM3_EIO;
-    }
-    int status = read_reply(CMD_HF_ISO14443A_READER, reply);
-    if(status != PM3_SUCCESS) return status;
-    if(reply->length != sizeof(iso14a_raw_resp_t) + sizeof(iso14a_card_select_t)) {
-        return PM3_ESOFT;
-    }
-
-    const iso14a_raw_resp_t* response = (const iso14a_raw_resp_t*)reply->data.asBytes;
-    if(!response->sel) return PM3_ENODATA;
-    if(response->len != sizeof(iso14a_card_select_t)) return PM3_ESOFT;
-    const iso14a_card_select_t* card = (const iso14a_card_select_t*)response->data;
-    bool selected_type2 = card->uidlen == NTAG213_UID_BYTES && card->sak == 0;
-    if(selected_type2) memcpy(uid, card->uid, NTAG213_UID_BYTES);
-
-    // CONNECT and RAW return separate replies with the same command ID.
-    status = read_reply(CMD_HF_ISO14443A_READER, reply);
+    command->flags = ISO14A_RAW | ISO14A_APPEND_CRC | ISO14A_NO_DISCONNECT;
+    if(timeout_etu) command->flags |= ISO14A_SET_TIMEOUT;
+    command->timeout = timeout_etu;
+    command->len = length;
+    memcpy(command->data, data, length);
+    int status = ntag21x_transceive(request, sizeof(*command) + length, reply);
     if(status != PM3_SUCCESS) return status;
     if(reply->length < sizeof(iso14a_raw_resp_t)) return PM3_ESOFT;
-    response = (const iso14a_raw_resp_t*)reply->data.asBytes;
+    const iso14a_raw_resp_t* response = (const iso14a_raw_resp_t*)reply->data.asBytes;
     if(response->sel || response->len != reply->length - sizeof(*response)) return PM3_ESOFT;
-
-    if(!selected_type2 || response->len != sizeof(ntag213_version) + ISO14443_CRC_SIZE ||
-       memcmp(response->data, ntag213_version, sizeof(ntag213_version)) != 0) {
-        return PM3_ENODATA;
-    }
-    BitBuffer* frame = bit_buffer_alloc(response->len);
-    bit_buffer_copy_bytes(frame, response->data, response->len);
-    bool crc_ok = iso14443_crc_check(Iso14443CrcTypeA, frame);
-    bit_buffer_free(frame);
-    return crc_ok ? PM3_SUCCESS : PM3_ECRC;
+    return PM3_SUCCESS;
 }
 
-static int ntag213_read_pages(uint8_t* pages, PacketResponseNG* reply) {
-    mful_readblock_t request = {.num_of_blocks = NTAG213_READ_PAGES};
-    clearCommandBuffer();
-    if(!SendCommandNG(CMD_HF_MIFAREU_READCARD, (uint8_t*)&request, sizeof(request))) {
-        return PM3_EIO;
-    }
-    int status = read_reply(CMD_HF_MIFAREU_READCARD, reply);
+static int ntag21x_select_once(
+    uint8_t uid[NTAG21X_UID_BYTES], const Ntag21xModel** model, PacketResponseNG* reply) {
+    iso14a_raw_cmd_t command = {
+        .flags = ISO14A_CONNECT | ISO14A_NO_RATS | ISO14A_CLEARTRACE | ISO14A_NO_DISCONNECT,
+    };
+    int status = ntag21x_transceive(&command, sizeof(command), reply);
     if(status != PM3_SUCCESS) return status;
-    if(reply->length != sizeof(mful_readblock_resp_t)) return PM3_ESOFT;
+    if(reply->length != sizeof(iso14a_raw_resp_t) + sizeof(iso14a_card_select_t)) return PM3_ESOFT;
+    const iso14a_raw_resp_t* response = (const iso14a_raw_resp_t*)reply->data.asBytes;
+    if(response->len != sizeof(iso14a_card_select_t)) return PM3_ESOFT;
+    if(!response->sel) return PM3_ENODATA;
+    const iso14a_card_select_t* card = (const iso14a_card_select_t*)response->data;
+    if(card->uidlen != NTAG21X_UID_BYTES || card->sak) return PM3_ENODATA;
+    memcpy(uid, card->uid, NTAG21X_UID_BYTES);
 
-    mful_readblock_resp_t range;
-    memcpy(&range, reply->data.asBytes, sizeof(range));
-    if(range.bytelen < NTAG213_READ_BYTES) return PM3_EPARTIAL;
-    if(range.bytelen != NTAG213_READ_BYTES) return PM3_ESOFT;
-    return bigbuf_download(pages, range.startidx, range.bytelen);
+    const uint8_t get_version[] = {0x60};
+    status = ntag21x_raw(get_version, sizeof(get_version), NTAG21X_VERSION_TIMEOUT_ETU, reply);
+    if(status != PM3_SUCCESS) return status;
+    response = (const iso14a_raw_resp_t*)reply->data.asBytes;
+    if(response->len != NTAG21X_VERSION_BYTES + ISO14443_CRC_SIZE) return PM3_ENODATA;
+    if(!ntag21x_crc_valid(response->data, response->len)) return PM3_ECRC;
+    *model = ntag21x_model_for_version(response->data);
+    return *model ? PM3_SUCCESS : PM3_EDEVNOTSUPP;
 }
 
-static const char* ntag213_format_text(const uint8_t* pages, char* details, size_t size) {
-    const uint8_t* capability = pages + 3 * NTAG213_PAGE_BYTES;
+static int ntag21x_select(
+    uint8_t uid[NTAG21X_UID_BYTES], const Ntag21xModel** model, PacketResponseNG* reply) {
+    int status = PM3_ENODATA;
+    for(unsigned attempt = 0; attempt < NTAG21X_SELECT_ATTEMPTS; attempt++) {
+        status = ntag21x_select_once(uid, model, reply);
+        if(status == PM3_EDEVNOTSUPP) return PM3_ENODATA;
+        if(status != PM3_ENODATA && status != PM3_ECRC) break;
+    }
+    return status;
+}
+
+static int ntag21x_fast_read(unsigned page_count, uint8_t* output, PacketResponseNG* reply) {
+    for(unsigned first = 0; first < page_count; first += NTAG21X_FAST_READ_PAGES) {
+        unsigned count = MIN(NTAG21X_FAST_READ_PAGES, page_count - first);
+        const uint8_t request[] = {0x3a, first, first + count - 1};
+        size_t size = count * NTAG21X_PAGE_BYTES;
+        size_t frame_size = size + ISO14443_CRC_SIZE;
+        int status = PM3_EPARTIAL;
+        for(unsigned attempt = 0; attempt < NTAG21X_FAST_READ_ATTEMPTS; attempt++) {
+            status = ntag21x_raw(request, sizeof(request), 0, reply);
+            if(status != PM3_SUCCESS) return status;
+            const iso14a_raw_resp_t* response = (const iso14a_raw_resp_t*)reply->data.asBytes;
+            if(response->len != frame_size) {
+                status = PM3_EPARTIAL;
+                continue;
+            }
+            if(!ntag21x_crc_valid(response->data, frame_size)) {
+                status = PM3_ECRC;
+                continue;
+            }
+            memcpy(output + first * NTAG21X_PAGE_BYTES, response->data, size);
+            break;
+        }
+        if(status != PM3_SUCCESS) return status;
+    }
+    return PM3_SUCCESS;
+}
+
+static bool ntag21x_field_off(void) {
+    // Field shutdown has no reply and must finish even when the scan is cancelled.
+    const volatile bool* cancel = proxmark5_frame_set_operation_cancel(NULL);
+    iso14a_raw_cmd_t command = {0};
+    bool off = SendCommandNG(CMD_HF_ISO14443A_READER, (uint8_t*)&command, sizeof(command)) &&
+               proxmark5_frame_synchronize();
+    proxmark5_frame_set_operation_cancel(cancel);
+    return off;
+}
+
+static const char* ntag21x_format_text(
+    const uint8_t* pages, const Ntag21xModel* model, char* details, size_t size) {
+    details[0] = '\0';
+    const uint8_t* capability = pages + 3 * NTAG21X_PAGE_BYTES;
     if(capability[0] != 0xe1 || capability[1] >> 4 != 1) return "NDEF: unformatted";
     size_t data_size = capability[2] * 8U;
-    if(!data_size || data_size > NTAG213_USER_BYTES) return "NDEF: invalid size";
+    size_t user_size = (model->read_pages - NTAG21X_USER_START) * NTAG21X_PAGE_BYTES;
+    if(!data_size || data_size > user_size) return "NDEF: invalid size";
     if(capability[3] >> 4) return "NDEF: restricted";
 
-    const uint8_t* data = pages + NTAG213_USER_START * NTAG213_PAGE_BYTES;
+    const uint8_t* data = pages + NTAG21X_USER_START * NTAG21X_PAGE_BYTES;
     const char prefix[] = "NDEF text\n";
     memcpy(details, prefix, sizeof(prefix));
     Type2NdefResult status =
@@ -105,62 +171,77 @@ static const char* ntag213_format_text(const uint8_t* pages, char* details, size
     return status == Type2NdefEmpty ? "NDEF: empty" : "NDEF: unsupported";
 }
 
-static void ntag213_format_result(SimpleReaderResult* result) {
-    uint8_t uid[NTAG213_UID_BYTES];
-    ntag213_pages_uid((const Ntag213Pages*)result->data, uid);
+static void ntag21x_format_result(SimpleReaderResult* result) {
+    const Ntag21xPages* pages = (const Ntag21xPages*)result->data;
+    const Ntag21xModel* model = ntag21x_model_for_version(pages->version);
+    furi_assert(model);
+    uint8_t uid[NTAG21X_UID_BYTES];
+    ntag21x_pages_uid(pages, uid);
     snprintf(
         result->lines[0],
         sizeof(result->lines[0]),
         "UID %02X%02X%02X%02X%02X%02X%02X",
         uid[0], uid[1], uid[2], uid[3], uid[4], uid[5], uid[6]);
-    snprintf(result->lines[1], sizeof(result->lines[1]), "%u user bytes", NTAG213_USER_BYTES);
-    char text[NTAG213_USER_BYTES + 16];
-    const char* ndef = ntag213_format_text(result->data, text, sizeof(text));
+    unsigned user_size = (model->read_pages - NTAG21X_USER_START) * NTAG21X_PAGE_BYTES;
+    snprintf(result->lines[1], sizeof(result->lines[1]), "%s  %u bytes", model->name, user_size);
+    char text[NTAG21X_MAX_USER_BYTES + 16];
+    const char* ndef = ntag21x_format_text(pages->bytes, model, text, sizeof(text));
     snprintf(result->lines[2], sizeof(result->lines[2]), "%s", ndef);
     result->line_count = 3;
 }
 
-static void ntag213_format_details(const uint8_t* pages, FuriString* text) {
-    char ndef[NTAG213_USER_BYTES + 16];
-    ndef[0] = '\0';
-    ntag213_format_text(pages, ndef, sizeof(ndef));
-    furi_string_printf(text, "%s%sUser pages 04-39\n", ndef, *ndef ? "\n\n" : "");
-    for(unsigned page = NTAG213_USER_START; page < NTAG213_READ_PAGES; page++) {
-        const uint8_t* bytes = pages + page * NTAG213_PAGE_BYTES;
+static void ntag21x_format_details(const uint8_t* data, FuriString* text) {
+    const Ntag21xPages* pages = (const Ntag21xPages*)data;
+    const Ntag21xModel* model = ntag21x_model_for_version(pages->version);
+    furi_assert(model);
+    char ndef[NTAG21X_MAX_USER_BYTES + 16];
+    ntag21x_format_text(pages->bytes, model, ndef, sizeof(ndef));
+    furi_string_printf(text, "%s%sUser pages 04-%u\n", ndef, *ndef ? "\n\n" : "", model->read_pages - 1U);
+    for(unsigned page = NTAG21X_USER_START; page < model->read_pages; page++) {
+        const uint8_t* bytes = pages->bytes + page * NTAG21X_PAGE_BYTES;
         furi_string_cat_printf(
             text, "%02u  %02X%02X%02X%02X\n", page, bytes[0], bytes[1], bytes[2], bytes[3]);
     }
 }
 
-static int ntag213_read(SimpleReaderResult* result) {
-    uint8_t uid[NTAG213_UID_BYTES];
+static int ntag21x_read(SimpleReaderResult* result) {
+    Ntag21xPages* pages = (Ntag21xPages*)result->data;
+    uint8_t uid[NTAG21X_UID_BYTES];
     PacketResponseNG reply;
-    int status = ntag213_select(uid, &reply);
+    const Ntag21xModel* model = NULL;
+    int status = ntag21x_select(uid, &model, &reply);
+    if(status == PM3_SUCCESS) {
+        memset(pages, 0, sizeof(*pages));
+        status = ntag21x_fast_read(model->read_pages, pages->bytes, &reply);
+    }
+    bool field_off = ntag21x_field_off();
+    if(proxmark5_frame_operation_cancelled()) return PM3_EOPABORTED;
     if(status != PM3_SUCCESS) return status;
-    status = ntag213_read_pages(result->data, &reply);
-    if(status != PM3_SUCCESS) return status;
-    uint8_t read_uid[NTAG213_UID_BYTES];
-    ntag213_pages_uid((const Ntag213Pages*)result->data, read_uid);
+    if(!field_off) return PM3_EIO;
+    if(!ntag21x_pages_valid(pages)) return PM3_ESOFT;
+    uint8_t read_uid[NTAG21X_UID_BYTES];
+    ntag21x_pages_uid(pages, read_uid);
     if(memcmp(uid, read_uid, sizeof(uid))) {
         return PM3_ECARDEXCHANGE;
     }
 
-    ntag213_format_result(result);
+    memcpy(pages->version, model->version, sizeof(pages->version));
+    ntag21x_format_result(result);
     return PM3_SUCCESS;
 }
 
-static void ntag213_save(const uint8_t* data) {
-    saved_ntag213_save((const Ntag213Pages*)data);
+static void ntag21x_save(const uint8_t* data) {
+    saved_ntag21x_save((const Ntag21xPages*)data);
 }
 
-const SimpleReader simple_reader_ntag213 = {
-    .title = "NTAG213 Reader",
-    .prompt = "Place NTAG213 on HF coil",
-    .no_data = "No NTAG213 found",
+const SimpleReader simple_reader_ntag21x = {
+    .title = "NTAG21x Reader",
+    .prompt = "Place NTAG21x on HF coil",
+    .no_data = "No NTAG21x found",
     .no_data_hint = "Use the PM5 HF antenna",
-    .data_size = NTAG213_READ_BYTES,
-    .read = ntag213_read,
-    .save = ntag213_save,
-    .format = ntag213_format_result,
-    .format_details = ntag213_format_details,
+    .data_size = sizeof(Ntag21xPages),
+    .read = ntag21x_read,
+    .save = ntag21x_save,
+    .format = ntag21x_format_result,
+    .format_details = ntag21x_format_details,
 };

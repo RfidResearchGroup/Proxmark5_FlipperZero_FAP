@@ -67,9 +67,10 @@ static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
         return true;
     case OperateBrowseNtag213:
     case OperateImportNtag213: {
-        Ntag213Pages pages;
-        if(saved_ntag213_browse(&pages, event == OperateImportNtag213) &&
-           simple_reader_page_show_saved(app->simple_reader_page, &simple_reader_ntag213, pages.bytes)) {
+        Ntag21xPages pages = {0};
+        if(saved_ntag21x_browse(&pages, event == OperateImportNtag213) &&
+           simple_reader_page_show_saved(
+               app->simple_reader_page, &simple_reader_ntag21x, (const uint8_t*)&pages)) {
             view_dispatcher_switch_to_view(app->view_dispatcher, SimpleReaderPageViewId);
         }
         return true;

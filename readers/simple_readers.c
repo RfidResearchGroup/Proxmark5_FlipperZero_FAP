@@ -4,7 +4,7 @@ extern const SimpleReader simple_reader_em4100;
 extern const SimpleReader simple_reader_t5577;
 
 const SimpleReader* const simple_readers[] = {
-    &simple_reader_ntag213,
+    &simple_reader_ntag21x,
     &simple_reader_em4100,
     &simple_reader_t5577,
 };
