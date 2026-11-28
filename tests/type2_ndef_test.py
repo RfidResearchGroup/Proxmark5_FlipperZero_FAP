@@ -62,6 +62,31 @@ int main(void) {
     assert(type2_ndef_read(long_uri, sizeof(long_uri), text, sizeof(text)) == Type2NdefUri);
     assert(strncmp(text, "ftp://anonymous:anonymous@", 26) == 0);
     assert(strlen(text) == 26 + sizeof(long_uri) - 12);
+
+    const uint8_t poster[] = {
+        0x03, 25, 0xd1, 2, 20, 'S', 'p', 0x91, 1, 4, 'U', 4, 'a', '.', 'b',
+        0x51, 1, 8, 'T', 2, 'e', 'n', 'H', 'e', 'l', 'l', 'o',
+    };
+    assert(type2_ndef_read(poster, sizeof(poster), text, sizeof(text)) == Type2NdefSmartPoster);
+    assert(strcmp(text, "Hello\n\nURL\nhttps://a.b") == 0);
+    const uint8_t poster_no_title[] = {
+        0x03, 13, 0xd1, 2, 8, 'S', 'p', 0xd1, 1, 4, 'U', 4, 'a', '.', 'b',
+    };
+    assert(type2_ndef_read(poster_no_title, sizeof(poster_no_title), text, sizeof(text)) ==
+           Type2NdefSmartPoster);
+    assert(strcmp(text, "https://a.b") == 0);
+    const uint8_t poster_no_uri[] = {
+        0x03, 17, 0xd1, 2, 12, 'S', 'p', 0xd1, 1, 8, 'T', 2, 'e', 'n', 'H', 'e', 'l', 'l', 'o',
+    };
+    assert(type2_ndef_read(poster_no_uri, sizeof(poster_no_uri), text, sizeof(text)) ==
+           Type2NdefInvalid);
+    assert(text[0] == '\0');
+    const uint8_t poster_two_uris[] = {
+        0x03, 21, 0xd1, 2, 16, 'S', 'p', 0x91, 1, 4, 'U', 4, 'a', '.', 'b',
+        0x51, 1, 4, 'U', 4, 'b', '.', 'a',
+    };
+    assert(type2_ndef_read(poster_two_uris, sizeof(poster_two_uris), text, sizeof(text)) ==
+           Type2NdefInvalid);
     return 0;
 }
 '''

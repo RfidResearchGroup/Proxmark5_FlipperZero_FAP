@@ -9,6 +9,7 @@ typedef enum {
     Type2NdefText,
     Type2NdefUri,
     Type2NdefTextAndUri,
+    Type2NdefSmartPoster,
     Type2NdefOther,
     Type2NdefInvalid,
 } Type2NdefResult;

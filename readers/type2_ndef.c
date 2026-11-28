@@ -27,25 +27,25 @@ static Type2NdefResult read_uri(
     return Type2NdefUri;
 }
 
-static Type2NdefResult show_text_and_uri(
+static Type2NdefResult append_uri(
     const uint8_t* uri, size_t uri_size, char* text, size_t text_size) {
     const char heading[] = "\n\nURL\n";
     size_t used = strlen(text);
     size_t uri_offset = used + sizeof(heading) - 1;
-    if(uri_offset < text_size &&
-       read_uri(uri, uri_size, text + uri_offset, text_size - uri_offset) == Type2NdefUri) {
-        memcpy(text + used, heading, sizeof(heading) - 1);
-        return Type2NdefTextAndUri;
-    }
-    return Type2NdefText;
+    if(uri_offset >= text_size) return Type2NdefInvalid;
+    Type2NdefResult result = read_uri(uri, uri_size, text + uri_offset, text_size - uri_offset);
+    if(result == Type2NdefUri) memcpy(text + used, heading, sizeof(heading) - 1);
+    return result;
 }
 
 static Type2NdefResult read_ndef_message(
-    const uint8_t* data, size_t size, char* text, size_t text_size) {
+    const uint8_t* data, size_t size, char* text, size_t text_size, bool in_poster) {
     bool first = true;
     bool found_text = false;
     const uint8_t* uri = NULL;
     size_t uri_size = 0;
+    const uint8_t* poster = NULL;
+    size_t poster_size = 0;
     while(size >= 2) {
         uint8_t flags = *data++;
         uint8_t type_size = *data++;
@@ -89,20 +89,34 @@ static Type2NdefResult read_ndef_message(
                 text[count] = '\0';
                 found_text = true;
             }
-        } else if(tnf == 1 && type_size == 1 && data[0] == 'U' && !uri) {
-            uri = payload;
-            uri_size = payload_size;
+        } else if(tnf == 1 && type_size == 1 && data[0] == 'U') {
+            if(in_poster && uri) return Type2NdefInvalid;
+            if(!uri) {
+                uri = payload;
+                uri_size = payload_size;
+            }
+        } else if(!in_poster && !poster && tnf == 1 && type_size == 2 && memcmp(data, "Sp", 2) == 0) {
+            poster = payload;
+            poster_size = payload_size;
         }
 
         data = payload + payload_size;
         size -= header_size + payload_size;
         if(flags & 0x40) {
             if(size) return Type2NdefInvalid;
-            if(found_text) {
-                return uri ? show_text_and_uri(uri, uri_size, text, text_size) : Type2NdefText;
+            if(poster) {
+                text[0] = '\0';
+                return read_ndef_message(poster, poster_size, text, text_size, true);
             }
-            if(uri) return read_uri(uri, uri_size, text, text_size);
-            return Type2NdefOther;
+            if(!uri) {
+                if(in_poster) return Type2NdefInvalid;
+                return found_text ? Type2NdefText : Type2NdefOther;
+            }
+            Type2NdefResult result = found_text ? append_uri(uri, uri_size, text, text_size) :
+                                                 read_uri(uri, uri_size, text, text_size);
+            if(in_poster) return result == Type2NdefUri ? Type2NdefSmartPoster : result;
+            if(found_text) return result == Type2NdefUri ? Type2NdefTextAndUri : Type2NdefText;
+            return result;
         }
     }
     return Type2NdefInvalid;
@@ -127,7 +141,7 @@ Type2NdefResult type2_ndef_read(
         if(length > size - offset) return Type2NdefInvalid;
         if(type == 0x03) {
             if(!length) return Type2NdefEmpty;
-            Type2NdefResult result = read_ndef_message(data + offset, length, text, text_size);
+            Type2NdefResult result = read_ndef_message(data + offset, length, text, text_size, false);
             if(result == Type2NdefEmpty || result == Type2NdefOther || result == Type2NdefInvalid) {
                 text[0] = '\0';
             }
