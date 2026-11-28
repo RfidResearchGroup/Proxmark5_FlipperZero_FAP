@@ -333,7 +333,7 @@ int main(void) {
     assert(read_em4100_id(tag) == PM3_EMALLOC && em_requests == before_requests);
 
     max_heap_block++;
-    uint8_t* block = lf_capture_alloc(EM_SAMPLES_PER_BLOCK);
+    uint8_t* block = proxmark5_try_alloc(EM_SAMPLES_PER_BLOCK);
     assert(block);
     free(block);
 

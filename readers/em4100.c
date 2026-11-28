@@ -4,6 +4,7 @@
 #include <toolbox/protocols/protocol_dict.h>
 #include "bigbuf.h"
 #include "lf_capture.h"
+#include "proxmark5_alloc.h"
 #include "proxmark5_frame.h"
 #include "simple_readers.h"
 
@@ -101,7 +102,7 @@ static int read_em4100_id(uint8_t id[EM4100_ID_BYTES]) {
     uint8_t* samples[EM_SAMPLE_BLOCKS] = {0};
     int status = PM3_EMALLOC;
     for(size_t i = 0; i < COUNT_OF(samples); i++) {
-        samples[i] = lf_capture_alloc(EM_SAMPLES_PER_BLOCK);
+        samples[i] = proxmark5_try_alloc(EM_SAMPLES_PER_BLOCK);
         if(!samples[i]) goto done;
     }
 

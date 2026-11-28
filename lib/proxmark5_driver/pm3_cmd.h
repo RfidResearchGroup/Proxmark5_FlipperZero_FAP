@@ -26,6 +26,7 @@
 #define USART_SLOW_LINK
 
 #define PM3_CMD_DATA_SIZE 512
+#define PM3_CMD_DATA_WIRE_MAX 4064U
 #define PM3_CMD_DATA_SIZE_MIX ( PM3_CMD_DATA_SIZE - 3 * sizeof(uint64_t) )
 
 typedef struct {

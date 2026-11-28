@@ -6,17 +6,6 @@
 #define LF_CONFIG_TIMEOUT_MS 1000
 #define LF_CAPTURE_TIMEOUT_MS 3000
 
-void* lf_capture_alloc(size_t size) {
-    // The Flipper heap's block size includes its two-word header.
-    const size_t header_size = 2U * sizeof(uint32_t);
-    int32_t lock = furi_kernel_lock();
-    size_t available = memmgr_heap_get_max_free_block();
-    void* samples = NULL;
-    if(available > header_size && size <= available - header_size) samples = malloc(size);
-    if(lock == 0) furi_kernel_unlock();
-    return samples;
-}
-
 static int get_sampling_config(sample_config* config) {
     PacketResponseNG reply;
     if(!SendCommandNG(CMD_LF_SAMPLING_GET_CONFIG, NULL, 0)) return PM3_EIO;

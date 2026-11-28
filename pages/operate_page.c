@@ -15,8 +15,19 @@ OperatePage* operate_page_create(SubmenuItemCallback callback, void* context) {
 
     operate_page->saved_submenu = submenu_alloc();
     submenu_set_header(operate_page->saved_submenu, "Saved");
+    submenu_add_item(operate_page->saved_submenu, "14A Trace", OperateBrowseHfTrace, callback, context);
     submenu_add_item(operate_page->saved_submenu, "EM4100 Tags", OperateBrowseEm4100, callback, context);
     submenu_add_item(operate_page->saved_submenu, "Tag Reads", OperateBrowseTagReads, callback, context);
+
+    submenu_add_item(operate_page->saved_submenu, "LF Waveform", OperateBrowseLf, callback, context);
+
+    submenu_add_item(operate_page->saved_submenu, "HF Waveform", OperateBrowseHf, callback, context);
+
+    operate_page->capture_submenu = submenu_alloc();
+    submenu_set_header(operate_page->capture_submenu, "Capture");
+    submenu_add_item(operate_page->capture_submenu, "HF Waveform", OperateCaptureHf, callback, context);
+    submenu_add_item(operate_page->capture_submenu, "LF Waveform", OperateCaptureLf, callback, context);
+    submenu_add_item(operate_page->capture_submenu, "14A Trace", OperateCaptureHfTrace, callback, context);
 
     operate_page->hardware_submenu = submenu_alloc();
     submenu_set_header(operate_page->hardware_submenu, "Hardware");
@@ -26,6 +37,7 @@ OperatePage* operate_page_create(SubmenuItemCallback callback, void* context) {
 }
 
 void operate_page_free(OperatePage* operate_page) {
+    submenu_free(operate_page->capture_submenu);
     submenu_free(operate_page->saved_submenu);
     submenu_free(operate_page->hardware_submenu);
     submenu_free(operate_page->submenu);

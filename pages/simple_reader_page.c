@@ -2,8 +2,9 @@
 #include <gui/canvas.h>
 #include <gui/elements.h>
 #include "simple_reader_page.h"
-#include "pm3_cmd.h"
 #include "../readers/lf_capture.h"
+#include "pm3_cmd.h"
+#include "proxmark5_alloc.h"
 #include "proxmark5_frame.h"
 
 typedef struct {
@@ -96,7 +97,7 @@ static int32_t simple_reader_worker(void* context) {
         SimpleReaderResult result = {0};
         int status = PM3_EOPABORTED;
         if(proxmark5_frame_begin_operation(&page->cancel)) {
-            result.data = lf_capture_alloc(reader->data_size);
+            result.data = proxmark5_try_alloc(reader->data_size);
             status = result.data ? reader->read(&result) : PM3_EMALLOC;
             proxmark5_frame_end_operation();
         }

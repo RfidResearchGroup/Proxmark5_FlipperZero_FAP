@@ -39,6 +39,7 @@ static void fmps_cxt_home_selected(void* context, MainPageChoice choice) {
     static const OperateAction actions[] = {
         [MainPageRead] = OperateOpenMenu,
         [MainPageSaved] = OperateOpenSaved,
+        [MainPageCapture] = OperateOpenCapture,
         [MainPageHardware] = OperateOpenHardware,
     };
     fmps_cxt_menu_selected(context, actions[choice]);
@@ -59,11 +60,41 @@ static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
     case OperateOpenMenu:
         view_dispatcher_switch_to_view(app->view_dispatcher, OperatePageViewId);
         return true;
+    case OperateCaptureLf:
+        waveform_page_reset(app->waveform_page, WaveformLf, CaptureMenuViewId);
+        view_dispatcher_switch_to_view(app->view_dispatcher, WaveformViewId);
+        return true;
+    case OperateBrowseLf:
+        if(waveform_page_browse(app->waveform_page, WaveformLf, SavedMenuViewId)) {
+            view_dispatcher_switch_to_view(app->view_dispatcher, WaveformViewId);
+        }
+        return true;
+    case OperateCaptureHf:
+        waveform_page_reset(app->waveform_page, WaveformHf, CaptureMenuViewId);
+        view_dispatcher_switch_to_view(app->view_dispatcher, WaveformViewId);
+        return true;
+    case OperateBrowseHf:
+        if(waveform_page_browse(app->waveform_page, WaveformHf, SavedMenuViewId)) {
+            view_dispatcher_switch_to_view(app->view_dispatcher, WaveformViewId);
+        }
+        return true;
+    case OperateOpenCapture:
+        view_dispatcher_switch_to_view(app->view_dispatcher, CaptureMenuViewId);
+        return true;
     case OperateOpenSaved:
         view_dispatcher_switch_to_view(app->view_dispatcher, SavedMenuViewId);
         return true;
     case OperateBrowseEm4100:
         saved_em4100_browse();
+        return true;
+    case OperateCaptureHfTrace:
+        hf14a_trace_page_start(app->hf14a_trace_page, CaptureMenuViewId);
+        view_dispatcher_switch_to_view(app->view_dispatcher, Hf14aTraceViewId);
+        return true;
+    case OperateBrowseHfTrace:
+        if(hf14a_trace_page_browse(app->hf14a_trace_page, SavedMenuViewId)) {
+            view_dispatcher_switch_to_view(app->view_dispatcher, Hf14aTraceViewId);
+        }
         return true;
     case OperateBrowseTagReads:
         if(saved_tag_read_browse(app->saved_tag_text)) {
@@ -177,6 +208,10 @@ Proxmark5App* proxmark5_app_alloc() {
     view_set_previous_callback(hardware_menu, operate_page_previous_callback);
     view_dispatcher_add_view(app->view_dispatcher, HardwareMenuViewId, hardware_menu);
 
+    View* capture_menu = submenu_get_view(app->operate_page->capture_submenu);
+    view_set_previous_callback(capture_menu, operate_page_previous_callback);
+    view_dispatcher_add_view(app->view_dispatcher, CaptureMenuViewId, capture_menu);
+
     View* saved_menu = submenu_get_view(app->operate_page->saved_submenu);
     view_set_previous_callback(saved_menu, operate_page_previous_callback);
     view_dispatcher_add_view(app->view_dispatcher, SavedMenuViewId, saved_menu);
@@ -190,6 +225,16 @@ Proxmark5App* proxmark5_app_alloc() {
     View* reader = simple_reader_page_get_view(app->simple_reader_page);
     view_set_previous_callback(reader, simple_reader_previous_callback);
     view_dispatcher_add_view(app->view_dispatcher, SimpleReaderPageViewId, reader);
+
+    app->waveform_page = waveform_page_create();
+    View* waveform_page_view = waveform_page_get_view(app->waveform_page);
+    view_set_previous_callback(waveform_page_view, waveform_page_previous);
+    view_dispatcher_add_view(app->view_dispatcher, WaveformViewId, waveform_page_view);
+
+    app->hf14a_trace_page = hf14a_trace_page_create();
+    View* trace_view = hf14a_trace_page_view(app->hf14a_trace_page);
+    view_set_previous_callback(trace_view, hf14a_trace_page_previous);
+    view_dispatcher_add_view(app->view_dispatcher, Hf14aTraceViewId, trace_view);
 
     // Create and add ReadHitag2 page to the view dispatcher
     // The left "Back" button returns to the functions menu, same destination as the
@@ -249,13 +294,20 @@ void proxmark5_app_free(Proxmark5App* app) {
     status_page_stop_worker(app->status_page);
     antenna_check_page_stop_worker(app->antenna_check_page);
     live_voltage_page_stop_worker(app->live_voltage_page);
+    waveform_page_wait(app->waveform_page);
+    hf14a_trace_page_wait(app->hf14a_trace_page);
     simple_reader_page_stop_worker(app->simple_reader_page);
 
+    view_dispatcher_remove_view(app->view_dispatcher, WaveformViewId);
+    waveform_page_free(app->waveform_page);
+    view_dispatcher_remove_view(app->view_dispatcher, Hf14aTraceViewId);
+    hf14a_trace_page_free(app->hf14a_trace_page);
     view_dispatcher_remove_view(app->view_dispatcher, SimpleReaderPageViewId);
     simple_reader_page_free(app->simple_reader_page);
     view_dispatcher_remove_view(app->view_dispatcher, SavedTagReadViewId);
     text_box_free(app->saved_tag_view);
     furi_string_free(app->saved_tag_text);
+    view_dispatcher_remove_view(app->view_dispatcher, CaptureMenuViewId);
     view_dispatcher_remove_view(app->view_dispatcher, SavedMenuViewId);
 
     view_dispatcher_remove_view(app->view_dispatcher, MainPageViewId);
