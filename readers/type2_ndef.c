@@ -27,6 +27,19 @@ static Type2NdefResult read_uri(
     return Type2NdefUri;
 }
 
+static Type2NdefResult show_text_and_uri(
+    const uint8_t* uri, size_t uri_size, char* text, size_t text_size) {
+    const char heading[] = "\n\nURL\n";
+    size_t used = strlen(text);
+    size_t uri_offset = used + sizeof(heading) - 1;
+    if(uri_offset < text_size &&
+       read_uri(uri, uri_size, text + uri_offset, text_size - uri_offset) == Type2NdefUri) {
+        memcpy(text + used, heading, sizeof(heading) - 1);
+        return Type2NdefTextAndUri;
+    }
+    return Type2NdefText;
+}
+
 static Type2NdefResult read_ndef_message(
     const uint8_t* data, size_t size, char* text, size_t text_size) {
     bool first = true;
@@ -85,7 +98,9 @@ static Type2NdefResult read_ndef_message(
         size -= header_size + payload_size;
         if(flags & 0x40) {
             if(size) return Type2NdefInvalid;
-            if(found_text) return Type2NdefText;
+            if(found_text) {
+                return uri ? show_text_and_uri(uri, uri_size, text, text_size) : Type2NdefText;
+            }
             if(uri) return read_uri(uri, uri_size, text, text_size);
             return Type2NdefOther;
         }
@@ -113,7 +128,9 @@ Type2NdefResult type2_ndef_read(
         if(type == 0x03) {
             if(!length) return Type2NdefEmpty;
             Type2NdefResult result = read_ndef_message(data + offset, length, text, text_size);
-            if(result != Type2NdefText && result != Type2NdefUri) text[0] = '\0';
+            if(result == Type2NdefEmpty || result == Type2NdefOther || result == Type2NdefInvalid) {
+                text[0] = '\0';
+            }
             return result;
         }
         offset += length;

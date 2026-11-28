@@ -46,7 +46,9 @@ int main(void) {
     assert(text[0] == '\0');
     assert(type2_ndef_read(uncompressed, sizeof(uncompressed), text, sizeof(text)) == Type2NdefUri);
     assert(strcmp(text, "https://a.b") == 0);
-    assert(type2_ndef_read(mixed, sizeof(mixed), text, sizeof(text)) == Type2NdefText);
+    assert(type2_ndef_read(mixed, sizeof(mixed), text, sizeof(text)) == Type2NdefTextAndUri);
+    assert(strcmp(text, "Hello\n\nURL\nhttps://a.b") == 0);
+    assert(type2_ndef_read(mixed, sizeof(mixed), text, 6) == Type2NdefText);
     assert(strcmp(text, "Hello") == 0);
     assert(type2_ndef_read(unknown_prefix, sizeof(unknown_prefix), text, sizeof(text)) == Type2NdefOther);
     assert(text[0] == '\0');

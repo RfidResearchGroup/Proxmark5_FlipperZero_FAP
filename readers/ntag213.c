@@ -165,6 +165,7 @@ static const char* ntag21x_format_ndef(
     Type2NdefResult status = type2_ndef_read(data, data_size, details, size);
     if(status == Type2NdefText) return "NDEF text";
     if(status == Type2NdefUri) return "NDEF URL";
+    if(status == Type2NdefTextAndUri) return "NDEF text + URL";
     if(status == Type2NdefInvalid) return "NDEF: invalid";
     return status == Type2NdefEmpty ? "NDEF: empty" : "NDEF: unsupported";
 }
