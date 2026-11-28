@@ -2,13 +2,20 @@
 #include <gui/canvas.h>
 #include <gui/elements.h>
 #include "read_hitag2_page.h"
+#include "saved_tag_read.h"
+#include "proxmark5_com.h"
 #include "proxmark5_frame.h"
 #include "pm3_cmd.h"
 #include "hitag.h"
 
+#define HITAG2_RECONNECT_ATTEMPTS 3
+#define HITAG2_UID_ATTEMPTS 4
+
 typedef enum {
     ReadHitag2PageStateIdle,
     ReadHitag2PageStateRunning,
+    ReadHitag2PageStateReconnecting,
+    ReadHitag2PageStateDisconnected,
     ReadHitag2PageStateSuccess,
     ReadHitag2PageStateTimeout,
     ReadHitag2PageStateError,
@@ -18,13 +25,13 @@ typedef struct {
     ReadHitag2PageState state;
     int result;
     uint32_t uid;
-    bool uid_valid;
 } ReadHitag2PageModel;
 
 struct ReadHitag2Page {
     View* view;
 
     FuriThread* worker_thread;
+    // The view model lock protects the worker state and pending restart.
     bool worker_restart_requested;
     volatile bool worker_thread_cancel_requested;
 
@@ -59,95 +66,63 @@ static const char* getHitagTypeStr(uint32_t uid) {
     }
 }
 
-static int
-    read_hitag2_test(volatile bool* cancel_requested, uint32_t* out_uid, bool* out_uid_valid) {
-    if(out_uid) {
-        *out_uid = 0;
-    }
-    if(out_uid_valid) {
-        *out_uid_valid = false;
-    }
-
-    lf_hitag_data_t* packet = malloc(sizeof(lf_hitag_data_t));
-    PacketResponseNG* resp = malloc(sizeof(PacketResponseNG));
-    if(!packet || !resp) {
-        if(packet) {
-            free(packet);
-        }
-        if(resp) {
-            free(resp);
-        }
-        return PM3_EMALLOC;
-    }
-
-    memset(packet, 0, sizeof(lf_hitag_data_t));
-
-    uint8_t key[6];
-    memcpy(key, "MIKR", 4);
-
-    int pm3cmd = CMD_LF_HITAG_READER;
-    packet->cmd = HT2F_PASSWORD;
-    memcpy(packet->pwd, key, sizeof(packet->pwd));
-
-    FURI_LOG_I("ReadHitag2Page", "Sending Hitag2 read command to Proxmark5");
-
-    clearCommandBuffer();
-
+static int read_hitag2_uid(volatile bool* cancel_requested, uint32_t* uid) {
     if(cancel_requested && *cancel_requested) {
-        free(packet);
-        free(resp);
         return PM3_EOPABORTED;
     }
 
-    if(!SendCommandNG(pm3cmd, (uint8_t*)packet, sizeof(lf_hitag_data_t))) {
-            free(packet);
-            free(resp);
-            return PM3_EIO;
-        }
-
-    FURI_LOG_I("ReadHitag2Page", "Waiting for Hitag2 response from Proxmark5");
-
-    int wait_result =
-        proxmark5_frame_wait(pm3cmd, resp, 2000, cancel_requested);
-    if(wait_result != PM3_SUCCESS) {
-        proxmark5_frame_set_operation_cancel(NULL);
-        SendCommandNG(CMD_BREAK_LOOP, NULL, 0);
-        free(packet);
-        free(resp);
-        if(wait_result == PM3_EOPABORTED) {
-            FURI_LOG_I("ReadHitag2Page", "Hitag2 read canceled");
-        } else {
-            FURI_LOG_W("ReadHitag2Page", "Wait for Hitag2 response timeout");
-        }
-        return wait_result;
+    lf_hitag_data_t packet = {.cmd = HT2F_UID_ONLY};
+    PacketResponseNG response;
+    clearCommandBuffer();
+    if(!SendCommandNG(CMD_LF_HITAG_READER, (uint8_t*)&packet, sizeof(packet))) {
+        return cancel_requested && *cancel_requested ? PM3_EOPABORTED : PM3_EIO;
     }
 
-    FURI_LOG_I(
-        "ReadHitag2Page", "Received Hitag2 response from Proxmark5, status=%d", resp->status);
-
-    if(resp->status != PM3_SUCCESS) {
-        FURI_LOG_W("ReadHitag2Page", "Hitag2 operation failed");
-        free(packet);
-        free(resp);
+    int result = proxmark5_frame_wait(
+        CMD_LF_HITAG_READER, &response, 2000, cancel_requested);
+    if(result != PM3_SUCCESS) {
+        // A UID-only request ends on its own.
+        return result;
+    }
+    if(response.status != PM3_SUCCESS) {
+        return response.status;
+    }
+    if(response.length != HITAG_UID_SIZE) {
         return PM3_ESOFT;
     }
 
-    if(resp->length >= HITAG_UID_SIZE) {
-        uint32_t uid = ((uint32_t)resp->data.asBytes[0] << 24) |
-                       ((uint32_t)resp->data.asBytes[1] << 16) |
-                       ((uint32_t)resp->data.asBytes[2] << 8) | (uint32_t)resp->data.asBytes[3];
-        if(out_uid) {
+    *uid = ((uint32_t)response.data.asBytes[0] << 24) |
+           ((uint32_t)response.data.asBytes[1] << 16) |
+           ((uint32_t)response.data.asBytes[2] << 8) | (uint32_t)response.data.asBytes[3];
+    return PM3_SUCCESS;
+}
+
+static int read_hitag2_scan(volatile bool* cancel, uint32_t* out_uid) {
+    uint32_t candidate_uid = 0;
+    bool have_uid = false;
+
+    // A single UID reply has no checksum from the tag.
+    for(unsigned attempt = 0; attempt < HITAG2_UID_ATTEMPTS; attempt++) {
+        uint32_t uid;
+        int result = read_hitag2_uid(cancel, &uid);
+        if(result == PM3_EFAILED) {
+            continue;
+        }
+        if(result != PM3_SUCCESS) {
+            return result;
+        }
+        if(have_uid) {
+            if(uid != candidate_uid) {
+                return PM3_EWRONGANSWER;
+            }
             *out_uid = uid;
+            return PM3_SUCCESS;
         }
-        if(out_uid_valid) {
-            *out_uid_valid = true;
-        }
+        candidate_uid = uid;
+        have_uid = true;
     }
 
-    free(packet);
-    free(resp);
-
-    return PM3_SUCCESS;
+    return have_uid ? PM3_EWRONGANSWER : PM3_EFAILED;
 }
 
 static void read_hitag2_page_draw_callback(Canvas* canvas, void* context) {
@@ -158,51 +133,59 @@ static void read_hitag2_page_draw_callback(Canvas* canvas, void* context) {
 
     canvas_clear(canvas);
     canvas_set_font(canvas, FontPrimary);
+    canvas_draw_str(canvas, 4, 13, "Hitag2 Reader");
+    canvas_set_font(canvas, FontSecondary);
 
     switch(model->state) {
     case ReadHitag2PageStateIdle:
-        canvas_draw_str(canvas, 4, 16, "Read Hitag2");
-        canvas_set_font(canvas, FontSecondary);
         canvas_draw_str(canvas, 4, 34, "Waiting to start...");
         break;
     case ReadHitag2PageStateRunning:
-        canvas_draw_str(canvas, 4, 16, "Read Hitag2");
-        canvas_set_font(canvas, FontSecondary);
         canvas_draw_str(canvas, 4, 34, "Reading... please wait");
         break;
-    case ReadHitag2PageStateSuccess:
-        canvas_draw_str(canvas, 4, 16, "Read Hitag2");
-        canvas_set_font(canvas, FontSecondary);
-        canvas_draw_str(canvas, 4, 30, "Read success");
-        if(model->uid_valid) {
-            const char* type_str = getHitagTypeStr(model->uid);
-            char uid_type_str[48] = {0x00};
-            snprintf(
-                uid_type_str,
-                sizeof(uid_type_str),
-                "UID:%08lX Type:%s",
-                (unsigned long)model->uid,
-                type_str ? type_str : "n/a");
-            canvas_draw_str(canvas, 4, 42, uid_type_str);
-        } else {
-            canvas_draw_str(canvas, 4, 42, "UID:n/a Type:n/a");
-        }
+    case ReadHitag2PageStateReconnecting:
+        canvas_draw_str(canvas, 4, 34, "Reconnecting to PM5...");
         break;
+    case ReadHitag2PageStateDisconnected:
+        canvas_draw_str(canvas, 4, 34, "PM5 did not reconnect");
+        break;
+    case ReadHitag2PageStateSuccess: {
+        char line[32];
+        const char* type = getHitagTypeStr(model->uid);
+        canvas_draw_str(canvas, 4, 26, "Read success");
+        snprintf(line, sizeof(line), "UID: %08lX", (unsigned long)model->uid);
+        canvas_draw_str(canvas, 4, 38, line);
+        snprintf(line, sizeof(line), "Type: %s", type[0] ? type : "Unknown");
+        canvas_draw_str(canvas, 4, 50, line);
+        break;
+    }
     case ReadHitag2PageStateTimeout:
-        canvas_draw_str(canvas, 4, 16, "Read Hitag2");
-        canvas_set_font(canvas, FontSecondary);
         canvas_draw_str(canvas, 4, 34, "Read timeout");
         break;
     case ReadHitag2PageStateError:
-        canvas_draw_str(canvas, 4, 16, "Read Hitag2");
-        canvas_set_font(canvas, FontSecondary);
-        canvas_draw_str(canvas, 4, 34, "Read failed");
+        if(model->result == PM3_EFAILED) {
+            canvas_draw_str(canvas, 4, 28, "No Hitag2 UID read");
+            canvas_draw_str(canvas, 4, 41, "Move tag closer");
+        } else if(model->result == PM3_EWRONGANSWER) {
+            canvas_draw_str(canvas, 4, 28, "Could not confirm UID");
+            canvas_draw_str(canvas, 4, 41, "Hold tag still");
+        } else if(model->result == PM3_EIO) {
+            canvas_draw_str(canvas, 4, 34, "Send failed. Check link.");
+        } else if(model->result == PM3_ENOTIMPL) {
+            canvas_draw_str(canvas, 4, 34, "Reader unavailable");
+        } else {
+            canvas_draw_str(canvas, 4, 34, "Read failed");
+        }
         break;
     default:
         break;
     }
 
-    elements_button_left(canvas, "Back");
+    elements_button_left(canvas, model->state == ReadHitag2PageStateSuccess ? "Save" : "Back");
+    if(model->state != ReadHitag2PageStateRunning &&
+       model->state != ReadHitag2PageStateReconnecting) {
+        elements_button_right(canvas, "Scan Again");
+    }
 }
 
 static bool read_hitag2_page_input_callback(InputEvent* event, void* context) {
@@ -211,10 +194,31 @@ static bool read_hitag2_page_input_callback(InputEvent* event, void* context) {
         return false;
     }
 
-    // The page draws a left "Back" button, so it has to actually do something.
-    // InputKeyBack is deliberately left unhandled: the ViewDispatcher routes it
-    // through the view's previous-callback, which already leaves the page.
-    if(event->type == InputTypeShort && event->key == InputKeyLeft) {
+    if(event->type != InputTypeShort) {
+        return false;
+    }
+
+    ReadHitag2PageModel* model = view_get_model(read_hitag2_page->view);
+    if(event->key == InputKeyLeft && model->state == ReadHitag2PageStateSuccess) {
+        SavedTagRead tag = {.type = SavedTagHitag2, .hitag2_uid = model->uid};
+        view_commit_model(read_hitag2_page->view, false);
+        saved_tag_read_save(&tag);
+        return true;
+    }
+
+    ReadHitag2PageState state = model->state;
+    view_commit_model(read_hitag2_page->view, false);
+
+    if(event->key == InputKeyRight || event->key == InputKeyOk) {
+        if(state != ReadHitag2PageStateRunning && state != ReadHitag2PageStateReconnecting) {
+            read_hitag2_page_start(read_hitag2_page);
+        }
+        return true;
+    }
+
+    // The left button returns to Read when there is no result to save.
+    // The ViewDispatcher routes InputKeyBack through the view's previous-callback.
+    if(event->key == InputKeyLeft) {
         read_hitag2_page_stop(read_hitag2_page);
         if(read_hitag2_page->back_callback) {
             read_hitag2_page->back_callback(read_hitag2_page->back_callback_context);
@@ -225,37 +229,62 @@ static bool read_hitag2_page_input_callback(InputEvent* event, void* context) {
     return false;
 }
 
-static int32_t read_hitag2_page_worker(void* context) {
-    ReadHitag2Page* read_hitag2_page = context;
-    if(!read_hitag2_page) {
-        return 0;
+static int read_hitag2_reconnect(volatile bool* cancel, uint32_t* uid) {
+    for(unsigned attempt = 0; attempt < HITAG2_RECONNECT_ATTEMPTS && !*cancel; attempt++) {
+        if(proxmark5_com_handshake()) {
+            if(!proxmark5_frame_synchronize()) {
+                break;
+            }
+            int result = read_hitag2_scan(cancel, uid);
+            if(result == PM3_ETIMEOUT && proxmark5_frame_synchronize()) {
+                result = read_hitag2_scan(cancel, uid);
+            }
+            return result;
+        }
     }
+    return *cancel ? PM3_EOPABORTED : PM3_ENOTTY;
+}
 
+static void read_hitag2_page_scan(ReadHitag2Page* read_hitag2_page) {
     uint32_t uid = 0;
-    bool uid_valid = false;
     volatile bool* cancel = &read_hitag2_page->worker_thread_cancel_requested;
     int result = PM3_EOPABORTED;
     if(proxmark5_frame_begin_operation(cancel)) {
-        result = read_hitag2_test(cancel, &uid, &uid_valid);
+        result = read_hitag2_scan(cancel, &uid);
+        if(result == PM3_ETIMEOUT) {
+            ReadHitag2PageModel* model = view_get_model(read_hitag2_page->view);
+            const bool reconnect = !*cancel;
+            if(reconnect) {
+                model->state = ReadHitag2PageStateReconnecting;
+            }
+            view_commit_model(read_hitag2_page->view, reconnect);
+
+            result = reconnect ? read_hitag2_reconnect(cancel, &uid) : PM3_EOPABORTED;
+        }
+
         proxmark5_frame_end_operation();
     }
-
     ReadHitag2PageModel* model = view_get_model(read_hitag2_page->view);
-    model->result = result;
     if(*cancel) result = PM3_EOPABORTED;
+    model->result = result;
     if(result == PM3_SUCCESS) {
         model->state = ReadHitag2PageStateSuccess;
         model->uid = uid;
-        model->uid_valid = uid_valid;
     } else if(result == PM3_EOPABORTED) {
         model->state = ReadHitag2PageStateIdle;
+    } else if(result == PM3_ENOTTY) {
+        model->state = ReadHitag2PageStateDisconnected;
     } else if(result == PM3_ETIMEOUT) {
         model->state = ReadHitag2PageStateTimeout;
     } else {
         model->state = ReadHitag2PageStateError;
     }
     view_commit_model(read_hitag2_page->view, true);
+}
 
+static int32_t read_hitag2_page_worker(void* context) {
+    ReadHitag2Page* page = context;
+    if(page) read_hitag2_page_scan(page);
     return 0;
 }
 
@@ -286,7 +315,6 @@ ReadHitag2Page*
     model->state = ReadHitag2PageStateIdle;
     model->result = PM3_SUCCESS;
     model->uid = 0;
-    model->uid_valid = false;
     // Required: with a locking model, view_get_model() holds the mutex until commit.
     view_commit_model(read_hitag2_page->view, false);
 
@@ -307,9 +335,7 @@ void read_hitag2_page_free(ReadHitag2Page* read_hitag2_page) {
     }
 
     read_hitag2_page_stop_worker(read_hitag2_page);
-
     if(read_hitag2_page->view) {
-        view_set_context(read_hitag2_page->view, NULL);
         view_free_model(read_hitag2_page->view);
         view_free(read_hitag2_page->view);
         read_hitag2_page->view = NULL;
@@ -356,7 +382,6 @@ void read_hitag2_page_start(ReadHitag2Page* read_hitag2_page) {
     model->state = ReadHitag2PageStateRunning;
     model->result = PM3_SUCCESS;
     model->uid = 0;
-    model->uid_valid = false;
     view_commit_model(read_hitag2_page->view, true);
 
     read_hitag2_page->worker_thread =
