@@ -27,4 +27,7 @@ bool type2_ndef_replace_url(uint8_t* data, size_t size, const char* address, boo
 bool type2_ndef_replace_text_uri(
     uint8_t* data, size_t size, const char* text, const char* address, bool https, bool poster);
 
+bool type2_ndef_replace_vcard(
+    uint8_t* data, size_t size, const char* name, const char* phone, const char* email);
+
 #endif

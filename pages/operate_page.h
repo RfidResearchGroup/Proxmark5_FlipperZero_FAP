@@ -15,6 +15,7 @@ typedef enum {
     OperateWriteNtag21xUrl,
     OperateWriteNtag21xTextAndUrl,
     OperateWriteNtag21xSmartPoster,
+    OperateWriteNtag21xVCard,
     OperateConfirmNtag21x,
     OperateFinishNtag21x,
     OperateImportNtag213,

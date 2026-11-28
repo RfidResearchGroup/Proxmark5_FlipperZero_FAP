@@ -217,6 +217,18 @@ int main(void) {
     memcpy(backup, poster_write, sizeof(backup));
     assert(!type2_ndef_replace_text_uri(poster_write, sizeof(poster_write), "X", "e.f", false, false));
     assert(!memcmp(backup, poster_write, sizeof(backup)));
+    uint8_t vcard_write[257] = {0};
+    assert(type2_ndef_replace_vcard(vcard_write, sizeof(vcard_write), "Iceman, NFC", "+123", "x@y.z"));
+    assert(type2_ndef_read(vcard_write, sizeof(vcard_write), text, sizeof(text)) == Type2NdefVCard);
+    assert(strcmp(text, "Name: Iceman, NFC\nTel: +123\nEmail: x@y.z") == 0);
+    assert(type2_ndef_replace_vcard(vcard_write, sizeof(vcard_write), "Ice", "", ""));
+    assert(type2_ndef_read(vcard_write, sizeof(vcard_write), text, sizeof(text)) == Type2NdefVCard);
+    assert(strcmp(text, "Name: Ice") == 0);
+    memcpy(backup, vcard_write, sizeof(backup));
+    assert(!type2_ndef_replace_vcard(vcard_write, sizeof(vcard_write), "Ice\nFN:Other", "", ""));
+    assert(!type2_ndef_replace_vcard(vcard_write, 32, "Ice", "", ""));
+    assert(!type2_ndef_replace_text(vcard_write, sizeof(vcard_write), "Other"));
+    assert(!memcmp(backup, vcard_write, sizeof(backup)));
     return 0;
 }
 '''

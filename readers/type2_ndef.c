@@ -542,3 +542,56 @@ bool type2_ndef_replace_text_uri(
     used += put_url_record(message + used, 0x51, address, address_length, https);
     return replace_message(data, size, message, used, text_and_url);
 }
+
+static bool single_vcard(const uint8_t* data, size_t size) {
+    return short_record_size(data, size, 0xd2, "text/vcard") == size;
+}
+
+static bool append_vcard_field(
+    char* payload, size_t size, size_t* used, const char* property, const char* value) {
+    size_t column = strlen(property);
+    if(column > size - *used) return false;
+    memcpy(payload + *used, property, column);
+    *used += column;
+    for(; *value; value++) {
+        bool escape = strchr("\\,;", *value) != NULL;
+        size_t bytes = escape ? 2 : 1;
+        if(column + bytes > 75) {
+            if(size - *used < 3) return false;
+            memcpy(payload + *used, "\r\n ", 3);
+            *used += 3;
+            column = 1;
+        }
+        if(bytes > size - *used) return false;
+        if(escape) payload[(*used)++] = '\\';
+        payload[(*used)++] = *value;
+        column += bytes;
+    }
+    if(size - *used < 2) return false;
+    memcpy(payload + *used, "\r\n", 2);
+    *used += 2;
+    return true;
+}
+
+bool type2_ndef_replace_vcard(
+    uint8_t* data, size_t size, const char* name, const char* phone, const char* email) {
+    if(!*name || !printable(name) || !printable(phone) || !printable(email)) return false;
+    // RFC 6350 vCard 4.0 with a formatted name and optional phone and email.
+    static const char type[] = "text/vcard";
+    static const char begin[] = "BEGIN:VCARD\r\nVERSION:4.0\r\n";
+    static const char end[] = "END:VCARD\r\n";
+    char payload[SHORT_TLV_MESSAGE_MAX - 3 - (sizeof(type) - 1)];
+    size_t used = sizeof(begin) - 1;
+    memcpy(payload, begin, used);
+    size_t limit = sizeof(payload) - (sizeof(end) - 1);
+    if(!append_vcard_field(payload, limit, &used, "FN:", name) ||
+       (*phone && !append_vcard_field(payload, limit, &used, "TEL;VALUE=text:", phone)) ||
+       (*email && !append_vcard_field(payload, limit, &used, "EMAIL:", email))) {
+        return false;
+    }
+    memcpy(payload + used, end, sizeof(end) - 1);
+    used += sizeof(end) - 1;
+    uint8_t message[SHORT_TLV_MESSAGE_MAX];
+    size_t length = put_record(message, 0xd2, type, NULL, 0, payload, used);
+    return replace_message(data, size, message, length, single_vcard);
+}

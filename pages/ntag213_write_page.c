@@ -30,6 +30,7 @@ typedef struct {
     uint8_t row;
     uint8_t column;
     const char* notice;
+    bool symbols;
 } UrlInputModel;
 
 struct Ntag21xWritePage {
@@ -61,7 +62,14 @@ static const char* const text_keys[] = {
     "qwertyuiop012345",
     "asdfghjkl6789.-_",
     "zxcvbnm~:/?#[]@%",
-    "!$&*+, \b\r",
+    "!$&*+,\t \b\r",
+};
+
+static const char* const symbol_keys[] = {
+    "\"\\<>^`{|}~:/?#[]",
+    "!$&'()*+,;=%@_-",
+    "0123456789.",
+    "\t \b\r",
 };
 
 static bool link_pair(const Ntag21xWritePage* page) {
@@ -69,6 +77,7 @@ static bool link_pair(const Ntag21xWritePage* page) {
 }
 
 static unsigned field_count(const Ntag21xWritePage* page) {
+    if(page->format == Ntag21xWriteVCard) return 3;
     return link_pair(page) ? 2 : 1;
 }
 
@@ -77,8 +86,19 @@ static bool field_is_url(const Ntag21xWritePage* page) {
            (link_pair(page) && page->field == 1);
 }
 
+static const char* const* editor_keys(const UrlInputModel* model) {
+    if(field_is_url(model->page)) return url_keys;
+    return model->symbols ? symbol_keys : text_keys;
+}
+
 static const char* field_label(const Ntag21xWritePage* page) {
     if(field_is_url(page)) return "URL (hold OK for caps)";
+    if(page->format == Ntag21xWriteVCard) {
+        static const char* const labels[] = {
+            "Name (hold OK for caps)", "Phone (optional)", "Email (optional)",
+        };
+        return labels[page->field];
+    }
     return page->format == Ntag21xWriteSmartPoster ? "Title (hold OK for caps)" :
                                                     "Text (hold OK for caps)";
 }
@@ -87,6 +107,9 @@ static const char* validate_field(const Ntag21xWritePage* page) {
     const char* value = page->fields[page->field];
     if(field_is_url(page)) {
         return type2_ndef_url_address_valid(value) ? NULL : "Check the URL host/path";
+    }
+    if(page->format == Ntag21xWriteVCard) {
+        return page->field || *value ? NULL : "Enter a name";
     }
     return *value ? NULL : "Enter text";
 }
@@ -100,7 +123,7 @@ static void url_input_draw(Canvas* canvas, void* context) {
     canvas_clear(canvas);
     canvas_set_font(canvas, FontSecondary);
     const Ntag21xWritePage* page = model->page;
-    const char* const* keys = field_is_url(page) ? url_keys : text_keys;
+    const char* const* keys = editor_keys(model);
     canvas_draw_str(canvas, 3, 9, model->notice ? model->notice : field_label(page));
     elements_slightly_rounded_frame(canvas, 1, 12, 126, 13);
     const char* text = page->fields[page->field];
@@ -116,13 +139,14 @@ static void url_input_draw(Canvas* canvas, void* context) {
         for(size_t column = 0; keys[row][column]; column++) {
             char key = keys[row][column];
             bool selected = row == model->row && column == model->column;
-            uint8_t width = (key == '\r' || key == '\b' || key == ' ') ? 20 : 8;
+            uint8_t width = (key == '\r' || key == '\b' || key == ' ' || key == '\t') ? 20 : 8;
             if(selected) {
                 canvas_draw_box(canvas, x, y - 7, width, 9);
                 canvas_set_color(canvas, ColorWhite);
             }
-            if(key == '\b' || key == '\r' || key == ' ') {
-                const char* label = key == '\b' ? "Del" : (key == '\r' ? "OK" : "Sp");
+            if(width == 20) {
+                const char* label = key == '\t' ? (model->symbols ? "ABC" : "Sym") :
+                                    key == '\b' ? "Del" : (key == '\r' ? "OK" : "Sp");
                 canvas_draw_str(canvas, x + 2, y, label);
             } else {
                 canvas_draw_glyph(canvas, x + 1, y, key);
@@ -141,7 +165,7 @@ static bool url_input_key(InputEvent* event, void* context) {
     }
     Ntag21xWritePage* page = context;
     UrlInputModel* model = view_get_model(page->url_input);
-    const char* const* keys = field_is_url(page) ? url_keys : text_keys;
+    const char* const* keys = editor_keys(model);
     size_t width = strlen(keys[model->row]);
     char* value = page->fields[page->field];
     bool accepted = false;
@@ -168,6 +192,7 @@ static bool url_input_key(InputEvent* event, void* context) {
             if(model->notice) break;
             if(page->field + 1U < field_count(page)) {
                 page->field++;
+                model->symbols = false;
                 model->row = 0;
                 model->column = 0;
             } else {
@@ -176,6 +201,9 @@ static bool url_input_key(InputEvent* event, void* context) {
                 accepted = ntag21x_write_can_encode(&page->tag, page->format, values, page->https);
                 if(!accepted) model->notice = "Record too big for tag";
             }
+        } else if(key == '\t') {
+            model->symbols = !model->symbols;
+            model->column = model->symbols ? 0 : strlen(text_keys[model->row]) - 4;
         } else if(key == '\b') {
             if(length) value[length - 1] = '\0';
         } else if(length < page->value_max) {
@@ -190,6 +218,7 @@ static bool url_input_key(InputEvent* event, void* context) {
     case InputKeyBack:
         if(page->field) {
             page->field--;
+            model->symbols = false;
             model->row = 0;
             model->column = 0;
             model->notice = NULL;
@@ -201,7 +230,7 @@ static bool url_input_key(InputEvent* event, void* context) {
         handled = false;
         break;
     }
-    keys = field_is_url(page) ? url_keys : text_keys;
+    keys = editor_keys(model);
     model->column = MIN(model->column, strlen(keys[model->row]) - 1);
     view_commit_model(page->url_input, handled);
     if(accepted) page->on_text(page->context);
@@ -303,13 +332,21 @@ static void ntag21x_write_draw(Canvas* canvas, void* context) {
             if(page->format == Ntag21xWriteUrl) {
                 canvas_draw_str(canvas, 4, 35, scheme);
                 draw_url_preview(canvas, page->fields[0], model->url_offset);
-            } else {
+            } else if(link_pair(page)) {
                 const char* label = page->format == Ntag21xWriteSmartPoster ? "Title" : "Text";
                 canvas_draw_str(canvas, 4, 35, model->review_field ? scheme : label);
                 draw_url_preview(canvas, page->fields[model->review_field], model->url_offset);
                 elements_button_right(canvas, "Next");
+            } else {
+                static const char* const labels[] = {"Name", "Phone", "Email"};
+                const char* value = page->fields[model->review_field];
+                canvas_draw_str(canvas, 4, 35, labels[model->review_field]);
+                draw_url_preview(canvas, *value ? value : "(blank)", model->url_offset);
+                elements_button_right(canvas, "Next");
             }
-            elements_button_left(canvas, "Mode");
+            if(page->format == Ntag21xWriteUrl || link_pair(page)) {
+                elements_button_left(canvas, "Mode");
+            }
         }
         elements_button_center(canvas, "Write");
         break;
@@ -368,7 +405,7 @@ static bool ntag21x_write_input(InputEvent* event, void* context) {
     WritePageState state = model->state;
     bool start = state == WritePageConfirm && event->key == InputKeyOk;
     bool toggle_scheme = state == WritePageConfirm && event->key == InputKeyLeft &&
-                         page->format != Ntag21xWriteText;
+                         (page->format == Ntag21xWriteUrl || link_pair(page));
     bool next = state == WritePageConfirm && event->key == InputKeyRight && field_count(page) > 1;
     bool scroll = state == WritePageConfirm && scroll_key && page->format != Ntag21xWriteText;
     if(start) {

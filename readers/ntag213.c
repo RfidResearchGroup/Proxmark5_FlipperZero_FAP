@@ -284,6 +284,8 @@ static bool encode_ndef(
         return type2_ndef_replace_text_uri(data, size, values[0], values[1], https, false);
     case Ntag21xWriteSmartPoster:
         return type2_ndef_replace_text_uri(data, size, values[0], values[1], https, true);
+    case Ntag21xWriteVCard:
+        return type2_ndef_replace_vcard(data, size, values[0], values[1], values[2]);
     }
     return false;
 }
