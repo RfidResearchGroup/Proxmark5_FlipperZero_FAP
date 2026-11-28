@@ -11,6 +11,7 @@ typedef enum {
     Type2NdefTextAndUri,
     Type2NdefSmartPoster,
     Type2NdefVCard,
+    Type2NdefWifi,
     Type2NdefOther,
     Type2NdefInvalid,
 } Type2NdefResult;

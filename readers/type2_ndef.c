@@ -144,6 +144,117 @@ static Type2NdefResult read_vcard(
     return result;
 }
 
+enum {
+    WscAuthentication = 0x1003,
+    WscCredential = 0x100e,
+    WscEncryption = 0x100f,
+    WscSsid = 0x1045,
+};
+
+static uint16_t read_be16(const uint8_t* bytes) {
+    return ((uint16_t)bytes[0] << 8) | bytes[1];
+}
+
+static const uint8_t* wsc_read_attribute(
+    const uint8_t** data, size_t* size, uint16_t* type, size_t* length) {
+    if(*size < 4) return NULL;
+    *type = read_be16(*data);
+    *length = read_be16(*data + 2);
+    if(*length > *size - 4) return NULL;
+    const uint8_t* value = *data + 4;
+    *data = value + *length;
+    *size -= 4 + *length;
+    return value;
+}
+
+static const char* wifi_security(uint16_t authentication, uint16_t encryption) {
+    switch(authentication) {
+    case 0x0001:
+        if(encryption == 0x0002) return "WEP (open)";
+        return encryption <= 0x0001 ? "Open" : "Unknown";
+    case 0x0002:
+        return "WPA Personal";
+    case 0x0004:
+        return "WEP (shared)";
+    case 0x0008:
+        return "WPA Enterprise";
+    case 0x0010:
+        return "WPA2 Enterprise";
+    case 0x0020:
+        return "WPA2 Personal";
+    case 0x0022:
+        return "WPA/WPA2 Personal";
+    default:
+        return "Unknown";
+    }
+}
+
+static Type2NdefResult format_wifi(
+    const uint8_t* data, size_t size, char* text, size_t text_size) {
+    const uint8_t* ssid = NULL;
+    size_t ssid_size = 0;
+    uint16_t authentication = 0;
+    uint16_t encryption = 0;
+    while(size) {
+        uint16_t type;
+        size_t length;
+        const uint8_t* value = wsc_read_attribute(&data, &size, &type, &length);
+        if(!value) return Type2NdefInvalid;
+        switch(type) {
+        case WscSsid:
+            if(ssid || !length || length > 32) return Type2NdefInvalid;
+            ssid = value;
+            ssid_size = length;
+            break;
+        case WscAuthentication:
+            if(length != 2) return Type2NdefInvalid;
+            authentication = read_be16(value);
+            break;
+        case WscEncryption:
+            if(length != 2) return Type2NdefInvalid;
+            encryption = read_be16(value);
+            break;
+        case WscCredential:
+            return Type2NdefInvalid;
+        default:
+            break;
+        }
+    }
+    if(!ssid || !append_field(text, text_size, "SSID: ", ssid, ssid_size)) return Type2NdefInvalid;
+    const char* security = wifi_security(authentication, encryption);
+    if(!append_field(text, text_size, "Security: ", (const uint8_t*)security, strlen(security))) {
+        return Type2NdefInvalid;
+    }
+    return Type2NdefWifi;
+}
+
+static Type2NdefResult read_wifi(
+    const uint8_t* data, size_t size, char* text, size_t text_size) {
+    const uint8_t* credential = NULL;
+    size_t credential_size = 0;
+    while(size) {
+        uint16_t type;
+        size_t length;
+        const uint8_t* value = wsc_read_attribute(&data, &size, &type, &length);
+        if(!value) return Type2NdefInvalid;
+        if(!credential && type == WscCredential) {
+            credential = value;
+            credential_size = length;
+        }
+    }
+    if(!credential) return Type2NdefOther;
+    return format_wifi(credential, credential_size, text, text_size);
+}
+
+static Type2NdefResult mime_format(const uint8_t* type, size_t type_size) {
+    if(matches_case_insensitive(type, type_size, "text/vcard") ||
+       matches_case_insensitive(type, type_size, "text/x-vcard")) {
+        return Type2NdefVCard;
+    }
+    if(matches_case_insensitive(type, type_size, "application/vnd.wfa.wsc")) return Type2NdefWifi;
+    return Type2NdefOther;
+}
+
 static Type2NdefResult read_ndef_message(
     const uint8_t* data, size_t size, char* text, size_t text_size, bool in_poster) {
     bool first = true;
@@ -152,8 +263,9 @@ static Type2NdefResult read_ndef_message(
     size_t uri_size = 0;
     const uint8_t* poster = NULL;
     size_t poster_size = 0;
-    const uint8_t* vcard = NULL;
-    size_t vcard_size = 0;
+    const uint8_t* mime_payload = NULL;
+    size_t mime_size = 0;
+    Type2NdefResult mime = Type2NdefOther;
     while(size >= 2) {
         uint8_t flags = *data++;
         uint8_t type_size = *data++;
@@ -206,12 +318,12 @@ static Type2NdefResult read_ndef_message(
         } else if(!in_poster && !poster && tnf == 1 && type_size == 2 && memcmp(data, "Sp", 2) == 0) {
             poster = payload;
             poster_size = payload_size;
-        } else if(
-            !in_poster && !vcard && tnf == 2 &&
-            (matches_case_insensitive(data, type_size, "text/vcard") ||
-             matches_case_insensitive(data, type_size, "text/x-vcard"))) {
-            vcard = payload;
-            vcard_size = payload_size;
+        } else if(!in_poster && !mime_payload && tnf == 2) {
+            mime = mime_format(data, type_size);
+            if(mime != Type2NdefOther) {
+                mime_payload = payload;
+                mime_size = payload_size;
+            }
         }
 
         data = payload + payload_size;
@@ -225,7 +337,8 @@ static Type2NdefResult read_ndef_message(
             if(!uri) {
                 if(in_poster) return Type2NdefInvalid;
                 if(found_text) return Type2NdefText;
-                if(vcard) return read_vcard(vcard, vcard_size, text, text_size);
+                if(mime == Type2NdefVCard) return read_vcard(mime_payload, mime_size, text, text_size);
+                if(mime == Type2NdefWifi) return read_wifi(mime_payload, mime_size, text, text_size);
                 return Type2NdefOther;
             }
             Type2NdefResult result = found_text ? append_uri(uri, uri_size, text, text_size) :

@@ -168,6 +168,7 @@ static const char* ntag21x_format_ndef(
     if(status == Type2NdefTextAndUri) return "NDEF text + URL";
     if(status == Type2NdefSmartPoster) return "NDEF Smart Poster";
     if(status == Type2NdefVCard) return "NDEF vCard";
+    if(status == Type2NdefWifi) return "NDEF Wi-Fi";
     if(status == Type2NdefInvalid) return "NDEF: invalid";
     return status == Type2NdefEmpty ? "NDEF: empty" : "NDEF: unsupported";
 }

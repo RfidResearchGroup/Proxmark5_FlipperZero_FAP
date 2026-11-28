@@ -111,6 +111,28 @@ int main(void) {
     assert(text[0] == '\0');
     assert(read_mime("text/vcard", vcard, sizeof(vcard) - 1, text, 6) == Type2NdefInvalid);
     assert(text[0] == '\0');
+
+    const char wifi_type[] = "application/vnd.wfa.wsc";
+    uint8_t wifi[] = {
+        0x10, 0x0e, 0, 27,
+        0x10, 0x45, 0, 4, 'D', 'e', 'm', 'o',
+        0x10, 0x03, 0, 2, 0, 0x20,
+        0x10, 0x0f, 0, 2, 0, 0x08,
+        0x10, 0x27, 0, 3, 'k', 'e', 'y',
+    };
+    assert(read_mime(wifi_type, wifi, sizeof(wifi), text, sizeof(text)) == Type2NdefWifi);
+    assert(strcmp(text, "SSID: Demo\nSecurity: WPA2 Personal") == 0);
+    assert(read_mime(wifi_type, wifi, sizeof(wifi), text, 15) == Type2NdefInvalid);
+    assert(text[0] == '\0');
+    assert(read_mime(wifi_type, wifi, sizeof(wifi) - 1, text, sizeof(text)) == Type2NdefInvalid);
+    assert(read_mime(wifi_type, wifi + 4, sizeof(wifi) - 4, text, sizeof(text)) == Type2NdefOther);
+    wifi[17] = 0x01;
+    wifi[23] = 0x02;
+    assert(read_mime(wifi_type, wifi, sizeof(wifi), text, sizeof(text)) == Type2NdefWifi);
+    assert(strcmp(text, "SSID: Demo\nSecurity: WEP (open)") == 0);
+    wifi[7] = 40;
+    assert(read_mime(wifi_type, wifi, sizeof(wifi), text, sizeof(text)) == Type2NdefInvalid);
+    assert(text[0] == '\0');
     return 0;
 }
 '''
