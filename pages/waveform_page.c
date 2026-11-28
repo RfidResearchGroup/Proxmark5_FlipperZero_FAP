@@ -1,23 +1,26 @@
 #include <dialogs/dialogs.h>
+#include <fmps_cxt_icons.h>
 #include <furi.h>
 #include <gui/elements.h>
 #include <storage/storage.h>
 #include "../readers/bigbuf.h"
 #include "../readers/lf_capture.h"
 #include "../readers/hf_waveform.h"
+#include "saved_file_browser.h"
 #include "waveform_page.h"
 #include "proxmark5_alloc.h"
 #include "proxmark5_frame.h"
 
-#define LF_CAPTURE_COUNT 8192U
+#define LF_CAPTURE_COUNT 16384U
+#define LF_SHORT_CAPTURE_COUNT 8192U
 #define WAVEFORM_EXT ".pm3"
 #define PLOT_WIDTH 118U
 #define PLOT_TOP 15
 #define PLOT_HEIGHT 34
 
-static int capture_lf(uint8_t* samples) {
-    int status = lf_capture_samples(LF_CAPTURE_COUNT);
-    return status == PM3_SUCCESS ? bigbuf_download(samples, 0, LF_CAPTURE_COUNT) : status;
+static int capture_lf(uint8_t* samples, size_t count) {
+    int status = lf_capture_samples(count);
+    return status == PM3_SUCCESS ? bigbuf_download(samples, 0, count) : status;
 }
 
 typedef struct {
@@ -26,8 +29,6 @@ typedef struct {
     const char* directory;
     const char* prefix;
     uint16_t count;
-    uint16_t buffer_size;
-    int (*capture)(uint8_t* samples);
 } WaveformInfo;
 
 static const WaveformInfo waveform_info[] = {
@@ -37,8 +38,6 @@ static const WaveformInfo waveform_info[] = {
         .directory = APP_DATA_PATH("captures"),
         .prefix = "LF",
         .count = LF_CAPTURE_COUNT,
-        .buffer_size = LF_CAPTURE_COUNT,
-        .capture = capture_lf,
     },
     [WaveformHf] = {
         .title = "HF Plot",
@@ -46,8 +45,6 @@ static const WaveformInfo waveform_info[] = {
         .directory = APP_DATA_PATH("hf-captures"),
         .prefix = "HF",
         .count = HF_WAVEFORM_COUNT,
-        .buffer_size = HF_WAVEFORM_COUNT,
-        .capture = hf_waveform_capture,
     },
 };
 
@@ -65,8 +62,10 @@ typedef enum {
 
 typedef struct {
     CaptureState state;
+    WaveformBand band;
     const WaveformInfo* info;
     const uint8_t* samples;
+    uint16_t count;
     uint16_t start;
     uint16_t span;
     bool can_save;
@@ -93,7 +92,7 @@ static bool write_samples(File* file, const uint8_t* samples, size_t count) {
     return storage_file_sync(file);
 }
 
-static bool save_capture(const WaveformInfo* info, const uint8_t* samples) {
+static bool save_capture(const WaveformInfo* info, const uint8_t* samples, size_t count) {
     Storage* storage = furi_record_open(RECORD_STORAGE);
     FuriString* path = furi_string_alloc_set(info->directory);
     FuriString* name = furi_string_alloc();
@@ -106,7 +105,7 @@ static bool save_capture(const WaveformInfo* info, const uint8_t* samples) {
         furi_string_cat_printf(path, "/%s" WAVEFORM_EXT, furi_string_get_cstr(name));
         const char* filename = furi_string_get_cstr(path);
         if(storage_file_open(file, filename, FSAM_WRITE, FSOM_CREATE_NEW)) {
-            bool written = write_samples(file, samples, info->count);
+            bool written = write_samples(file, samples, count);
             bool closed = storage_file_close(file);
             saved = written && closed;
             if(!saved) storage_common_remove(storage, filename);
@@ -119,7 +118,7 @@ static bool save_capture(const WaveformInfo* info, const uint8_t* samples) {
     return saved;
 }
 
-static bool read_samples(File* file, uint8_t* samples, size_t expected_count) {
+static size_t read_samples(File* file, uint8_t* samples, size_t capacity) {
     char block[256];
     char line[6];
     size_t used = 0;
@@ -132,8 +131,8 @@ static bool read_samples(File* file, uint8_t* samples, size_t expected_count) {
                 line[used] = '\0';
                 char* end;
                 long value = strtol(line, &end, 10);
-                if(!used || *end || value < -128 || value > 127 || count == expected_count) {
-                    return false;
+                if(!used || *end || value < -128 || value > 127 || count == capacity) {
+                    return 0;
                 }
                 samples[count++] = value + 128;
                 used = 0;
@@ -141,28 +140,30 @@ static bool read_samples(File* file, uint8_t* samples, size_t expected_count) {
                 bool digit = c >= '0' && c <= '9';
                 if(used == sizeof(line) - 1 || (used && line[used - 1] == '\r') ||
                    (!digit && c != '\r' && (c != '-' || used))) {
-                    return false;
+                    return 0;
                 }
                 line[used++] = c;
             }
         }
     }
-    return storage_file_get_error(file) == FSE_OK && !used && count == expected_count;
+    return storage_file_get_error(file) == FSE_OK && !used ? count : 0;
 }
 
-static bool open_capture(const char* path, uint8_t* samples, size_t count) {
+static size_t open_capture(const char* path, uint8_t* samples, size_t capacity) {
     Storage* storage = furi_record_open(RECORD_STORAGE);
     File* file = storage_file_alloc(storage);
-    bool opened = storage_file_open(file, path, FSAM_READ, FSOM_OPEN_EXISTING) &&
-                  read_samples(file, samples, count);
+    size_t count = 0;
+    if(storage_file_open(file, path, FSAM_READ, FSOM_OPEN_EXISTING)) {
+        count = read_samples(file, samples, capacity);
+    }
     storage_file_free(file);
     furi_record_close(RECORD_STORAGE);
-    return opened;
+    return count;
 }
 
 static void draw_plot(Canvas* canvas, const CaptureModel* model) {
     char label[24];
-    snprintf(label, sizeof(label), "%u/%u", model->span, model->info->count);
+    snprintf(label, sizeof(label), "%u/%u", model->span, model->count);
     canvas_draw_str_aligned(canvas, 124, 11, AlignRight, AlignBottom, label);
     canvas_draw_frame(canvas, 4, PLOT_TOP, PLOT_WIDTH + 2, PLOT_HEIGHT + 2);
 
@@ -180,7 +181,7 @@ static void draw_plot(Canvas* canvas, const CaptureModel* model) {
         canvas_draw_line(canvas, 5 + x, top, 5 + x, bottom);
     }
     if(model->start) elements_button_left(canvas, "Pan");
-    if(model->start + model->span < model->info->count) elements_button_right(canvas, "Pan");
+    if(model->start + model->span < model->count) elements_button_right(canvas, "Pan");
     if(model->can_save) {
         elements_button_center(canvas, model->save_failed ? "Retry save" : "Save");
     } else {
@@ -199,7 +200,7 @@ static void capture_draw(Canvas* canvas, void* context) {
     switch(model->state) {
     case CaptureIdle:
         canvas_draw_str(canvas, 4, 28, model->info->description);
-        snprintf(count, sizeof(count), "%u samples, 8-bit", model->info->count);
+        snprintf(count, sizeof(count), "%u samples, 8-bit", model->count);
         canvas_draw_str(canvas, 4, 41, count);
         elements_button_center(canvas, "Capture");
         break;
@@ -229,7 +230,11 @@ static void capture_draw(Canvas* canvas, void* context) {
         break;
     case CaptureOpenFailed:
         canvas_draw_str(canvas, 4, 27, "Cannot open capture");
-        snprintf(count, sizeof(count), "Expected %u samples", model->info->count);
+        if(model->band == WaveformLf) {
+            snprintf(count, sizeof(count), "8192 or 16384 samples");
+        } else {
+            snprintf(count, sizeof(count), "Expected %u samples", model->count);
+        }
         canvas_draw_str(canvas, 4, 40, count);
         break;
     }
@@ -240,39 +245,57 @@ static int32_t capture_worker(void* context) {
     CaptureModel* model = view_get_model(page->view);
     CaptureState job = model->state;
     const WaveformInfo* info = model->info;
+    const bool lf = model->band == WaveformLf;
+    size_t count = job == CaptureSaving ? model->count : info->count;
     view_commit_model(page->view, false);
 
     CaptureState state;
     bool saved = false;
-    if(!page->samples) page->samples = proxmark5_try_alloc(info->buffer_size);
+    size_t capacity = count;
+    if(job != CaptureSaving) {
+        free(page->samples);
+        page->samples = proxmark5_try_alloc(capacity);
+        if(!page->samples && lf) {
+            capacity = LF_SHORT_CAPTURE_COUNT;
+            page->samples = proxmark5_try_alloc(capacity);
+        }
+    }
     if(job == CaptureReading) {
         int status = PM3_EMALLOC;
         if(page->samples) {
+            count = capacity;
             proxmark5_frame_begin_operation(NULL);
-            status = info->capture(page->samples);
+            status = lf ? capture_lf(page->samples, count) : hf_waveform_capture(page->samples);
             proxmark5_frame_end_operation();
         }
         if(status == PM3_SUCCESS) {
             state = CaptureReady;
         } else if(status == LfCaptureRestoreFailed) {
             state = CaptureRestoreFailed;
-        } else if(info->capture == hf_waveform_capture && status == PM3_EPARTIAL) {
+        } else if(status == PM3_EPARTIAL) {
             state = CaptureIncomplete;
         } else {
             state = CaptureReadFailed;
         }
     } else if(job == CaptureOpening) {
-        bool opened = page->samples &&
-                      open_capture(furi_string_get_cstr(page->file), page->samples, info->count);
-        state = opened ? CaptureReady : CaptureOpenFailed;
+        size_t length = page->samples ?
+                            open_capture(furi_string_get_cstr(page->file), page->samples, capacity) :
+                            0;
+        state = CaptureOpenFailed;
+        if(length == info->count || (lf && length == LF_SHORT_CAPTURE_COUNT)) {
+            count = length;
+            state = CaptureReady;
+        }
     } else {
-        saved = save_capture(info, page->samples);
+        saved = save_capture(info, page->samples, count);
         state = CaptureReady;
     }
 
     model = view_get_model(page->view);
     model->state = state;
     model->samples = page->samples;
+    model->count = count;
+    if(job != CaptureSaving) model->span = count;
     model->can_save = state == CaptureReady &&
                       (job == CaptureReading || (job == CaptureSaving && !saved));
     model->save_failed = job == CaptureSaving && !saved;
@@ -299,31 +322,31 @@ static bool capture_input(InputEvent* event, void* context) {
         view_commit_model(page->view, false);
         return true;
     }
+    bool ready_to_capture = state == CaptureIdle || state == CaptureReadFailed ||
+                            state == CaptureIncomplete;
     if(state == CaptureReady && event->key != InputKeyOk && event->key != InputKeyBack) {
         uint16_t span = model->span;
         uint16_t start = model->start;
         if(event->key == InputKeyUp && span / 2 >= PLOT_WIDTH) {
             span /= 2;
             start += span / 2;
-        } else if(event->key == InputKeyDown && span < model->info->count) {
+        } else if(event->key == InputKeyDown && span < model->count) {
             start = start > span / 2 ? start - span / 2 : 0;
-            span = MIN(span * 2, model->info->count);
+            span = MIN(span * 2, model->count);
         } else if(event->key == InputKeyLeft) {
             start = start > span / 4 ? start - span / 4 : 0;
         } else if(event->key == InputKeyRight) {
             start += span / 4;
         }
         model->span = span;
-        model->start = MIN(start, model->info->count - span);
+        model->start = MIN(start, model->count - span);
         view_commit_model(page->view, true);
         return true;
     }
     bool can_save = model->can_save;
     view_commit_model(page->view, false);
     if(event->key != InputKeyOk || event->type != InputTypeShort) return false;
-    if(state == CaptureIdle || state == CaptureReadFailed || state == CaptureIncomplete) {
-        start_job(page, CaptureReading);
-    }
+    if(ready_to_capture) start_job(page, CaptureReading);
     if(state == CaptureReady && can_save) start_job(page, CaptureSaving);
     return true;
 }
@@ -356,7 +379,7 @@ void waveform_page_reset(WaveformPage* page, WaveformBand band, uint32_t previou
     page->previous_view = previous_view;
     CaptureModel* model = view_get_model(page->view);
     const WaveformInfo* info = &waveform_info[band];
-    *model = (CaptureModel){.info = info, .span = info->count};
+    *model = (CaptureModel){.band = band, .info = info, .count = info->count, .span = info->count};
     view_commit_model(page->view, true);
 }
 
@@ -365,19 +388,22 @@ bool waveform_page_browse(WaveformPage* page, WaveformBand band, uint32_t previo
     FuriString* dir = furi_string_alloc_set(waveform_info[band].directory);
     storage_common_resolve_path_and_ensure_app_directory(storage, dir);
     bool exists = storage_simply_mkdir(storage, furi_string_get_cstr(dir));
-    furi_record_close(RECORD_STORAGE);
-
     DialogsApp* dialogs = furi_record_open(RECORD_DIALOGS);
     bool selected = false;
     if(exists) {
-        DialogsFileBrowserOptions options;
-        dialog_file_browser_set_basic_options(&options, WAVEFORM_EXT, NULL);
-        options.base_path = furi_string_get_cstr(dir);
-        selected = dialog_file_browser_show(dialogs, page->file, dir, &options);
+        selected = saved_file_browse(
+            storage,
+            dialogs,
+            page->file,
+            furi_string_get_cstr(dir),
+            WAVEFORM_EXT,
+            &I_pm5_tag_file_10px,
+            NULL);
     } else {
         dialog_message_show_storage_error(dialogs, "Cannot open captures");
     }
     furi_record_close(RECORD_DIALOGS);
+    furi_record_close(RECORD_STORAGE);
     furi_string_free(dir);
 
     if(selected) {
