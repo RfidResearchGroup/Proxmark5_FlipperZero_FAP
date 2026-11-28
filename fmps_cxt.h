@@ -35,6 +35,7 @@ typedef enum {
     SimpleReaderPageViewId,
     Ntag21xActionsViewId,
     Ntag21xTextViewId,
+    Ntag21xUrlViewId,
     Ntag21xWriteViewId,
 } Proxmark5ViewId;
 

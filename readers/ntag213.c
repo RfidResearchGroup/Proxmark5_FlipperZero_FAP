@@ -17,6 +17,7 @@
 #define NTAG21X_FAST_READ_ATTEMPTS 4U
 #define NTAG21X_CC_PAGE 3U
 #define NTAG21X_TEXT_OVERHEAD 10U
+#define NTAG21X_URL_OVERHEAD 8U
 
 static const Ntag21xModel models[] = {
     {"NTAG213", {0x00, 0x04, 0x04, 0x02, 0x01, 0x00, 0x0f, 0x03}, 40, 45, 0x12},
@@ -255,22 +256,24 @@ const SimpleReader simple_reader_ntag21x = {
 };
 
 static size_t ntag21x_ndef_offset(const Ntag21xModel* model, const uint8_t* user) {
-    // NTAG213 ships with a Lock Control TLV before the NDEF TLV.
+    // NTAG213 ships with a Lock Control TLV before the NDEF TLV (NXP datasheet, table 5).
     static const uint8_t lock_tlv[] = {0x01, 0x03, 0xa0, 0x0c, 0x34};
     return model == &models[0] && !memcmp(user, lock_tlv, sizeof(lock_tlv)) ?
                sizeof(lock_tlv) :
                0;
 }
 
-size_t ntag21x_write_text_max(const Ntag21xPages* pages) {
+size_t ntag21x_write_value_max(const Ntag21xPages* pages, Ntag21xWriteFormat format) {
     const Ntag21xModel* model = ntag21x_model_for_version(pages->version);
     if(!model) return 0;
     const uint8_t* user = pages->bytes + NTAG21X_USER_START * NTAG21X_PAGE_BYTES;
-    size_t limit = model->cc_size * 8U - ntag21x_ndef_offset(model, user) - NTAG21X_TEXT_OVERHEAD;
-    return MIN(limit, NTAG21X_TEXT_MAX);
+    size_t available = model->cc_size * 8U - ntag21x_ndef_offset(model, user);
+    return format == Ntag21xWriteText ? MIN(available - NTAG21X_TEXT_OVERHEAD, NTAG21X_TEXT_MAX) :
+                                      MIN(available - NTAG21X_URL_OVERHEAD, NTAG21X_URL_MAX);
 }
 
 static bool ntag21x_write_page(uint8_t page, const uint8_t* bytes, PacketResponseNG* reply) {
+    // NXP NTAG21x WRITE (A2h), also used by mifare_ultra_writeblock() in PM3 armsrc/mifareutil.c.
     uint8_t request[2 + NTAG21X_PAGE_BYTES] = {0xa2, page};
     memcpy(request + 2, bytes, NTAG21X_PAGE_BYTES);
     if(ntag21x_raw(request, sizeof(request), 0, reply) != PM3_SUCCESS) return false;
@@ -281,7 +284,8 @@ static bool ntag21x_write_page(uint8_t page, const uint8_t* bytes, PacketRespons
 static Ntag21xWriteResult ntag21x_write_selected(
     const Ntag21xModel* model,
     const Ntag21xPages* expected,
-    const char* text,
+    Ntag21xWriteFormat format,
+    const char* value,
     Ntag21xWriteProgress progress,
     void* context,
     uint8_t* current,
@@ -289,6 +293,7 @@ static Ntag21xWriteResult ntag21x_write_selected(
     PacketResponseNG* reply) {
     size_t read_size = model->read_pages * NTAG21X_PAGE_BYTES;
     size_t user_start = NTAG21X_USER_START * NTAG21X_PAGE_BYTES;
+    // PM3's hf mfu ndefwrite (client/src/cmdhfmfu.c) also uses the CC to bound NDEF writes.
     size_t ndef_size = model->cc_size * 8U;
     if(ntag21x_fast_read(model->read_pages + 2U, current, reply) != PM3_SUCCESS) return Ntag21xWriteLinkError;
     if(memcmp(current, expected->bytes, read_size)) return Ntag21xWriteTagChanged;
@@ -306,10 +311,15 @@ static Ntag21xWriteResult ntag21x_write_selected(
     memcpy(new_user, old_user, ndef_size);
     // Mirroring can change readback without changing the stored bytes.
     if(memcmp(current + NTAG21X_CC_PAGE * NTAG21X_PAGE_BYTES, capability, sizeof(capability)) ||
-       (config[0] & 0xc0) ||
-       !type2_ndef_replace_text(new_user + ndef_offset, ndef_size - ndef_offset, text)) {
+       (config[0] & 0xc0)) {
         return Ntag21xWriteUnsupported;
     }
+    uint8_t* ndef = new_user + ndef_offset;
+    size_t available = ndef_size - ndef_offset;
+    bool encoded = format == Ntag21xWriteText ?
+                       type2_ndef_replace_text(ndef, available, value) :
+                       type2_ndef_replace_url(ndef, available, value, format == Ntag21xWriteHttps);
+    if(!encoded) return Ntag21xWriteUnsupported;
     if(!memcmp(old_user, new_user, ndef_size)) return Ntag21xWriteVerified;
 
     size_t publish = ndef_offset / NTAG21X_PAGE_BYTES * NTAG21X_PAGE_BYTES;
@@ -351,9 +361,10 @@ static Ntag21xWriteResult ntag21x_write_selected(
     return Ntag21xWriteVerified;
 }
 
-Ntag21xWriteResult ntag21x_write_text(
+Ntag21xWriteResult ntag21x_write_ndef(
     const Ntag21xPages* expected,
-    const char* text,
+    Ntag21xWriteFormat format,
+    const char* value,
     Ntag21xWriteProgress progress,
     void* context,
     bool* cleanup_ok) {
@@ -378,7 +389,15 @@ Ntag21xWriteResult ntag21x_write_text(
             result = Ntag21xWriteTagChanged;
         } else {
             result = ntag21x_write_selected(
-                model, expected, text, progress, context, workspace, workspace + current_size, &reply);
+                model,
+                expected,
+                format,
+                value,
+                progress,
+                context,
+                workspace,
+                workspace + current_size,
+                &reply);
         }
     } else if(status == PM3_ENODATA) {
         result = Ntag21xWriteTagChanged;

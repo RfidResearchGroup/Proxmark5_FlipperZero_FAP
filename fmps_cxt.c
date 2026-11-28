@@ -100,12 +100,17 @@ static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
         view_dispatcher_switch_to_view(app->view_dispatcher, SimpleReaderPageViewId);
         return true;
     }
-    case OperateWriteNtag21x: {
+    case OperateWriteNtag21x:
+    case OperateWriteNtag21xUrl: {
         Ntag21xPages pages;
         if(simple_reader_page_get_live_data(
                app->simple_reader_page, &simple_reader_ntag21x, (uint8_t*)&pages)) {
-            ntag21x_write_page_edit(app->ntag21x_write, &pages);
-            view_dispatcher_switch_to_view(app->view_dispatcher, Ntag21xTextViewId);
+            Ntag21xWriteFormat format =
+                event == OperateWriteNtag21xUrl ? Ntag21xWriteHttps : Ntag21xWriteText;
+            ntag21x_write_page_edit(app->ntag21x_write, &pages, format);
+            view_dispatcher_switch_to_view(
+                app->view_dispatcher,
+                event == OperateWriteNtag21xUrl ? Ntag21xUrlViewId : Ntag21xTextViewId);
         }
         return true;
     }
@@ -227,7 +232,7 @@ static uint32_t ntag21x_text_previous(void* context) {
 
 static uint32_t ntag21x_write_previous(void* context) {
     ntag21x_write_page_wait(context);
-    return SimpleReaderPageViewId;
+    return ntag21x_write_page_is_url(context) ? Ntag21xUrlViewId : SimpleReaderPageViewId;
 }
 
 static uint32_t simple_reader_previous_callback(void* context) {
@@ -278,6 +283,7 @@ Proxmark5App* proxmark5_app_alloc() {
     submenu_set_header(app->ntag21x_actions, "NTAG21x");
     submenu_add_item(app->ntag21x_actions, "Save dump", OperateSaveNtag21x, fmps_cxt_menu_selected, app);
     submenu_add_item(app->ntag21x_actions, "Write NDEF text", OperateWriteNtag21x, fmps_cxt_menu_selected, app);
+    submenu_add_item(app->ntag21x_actions, "Write NDEF URL", OperateWriteNtag21xUrl, fmps_cxt_menu_selected, app);
     View* actions = submenu_get_view(app->ntag21x_actions);
     view_set_previous_callback(actions, reader_details_previous_callback);
     view_dispatcher_add_view(app->view_dispatcher, Ntag21xActionsViewId, actions);
@@ -286,6 +292,9 @@ Proxmark5App* proxmark5_app_alloc() {
     View* text_input = ntag21x_write_page_get_input_view(app->ntag21x_write);
     view_set_previous_callback(text_input, ntag21x_text_previous);
     view_dispatcher_add_view(app->view_dispatcher, Ntag21xTextViewId, text_input);
+    View* url_input = ntag21x_write_page_get_url_view(app->ntag21x_write);
+    view_set_previous_callback(url_input, ntag21x_text_previous);
+    view_dispatcher_add_view(app->view_dispatcher, Ntag21xUrlViewId, url_input);
     View* write_view = ntag21x_write_page_get_view(app->ntag21x_write);
     view_set_previous_callback(write_view, ntag21x_write_previous);
     view_dispatcher_add_view(app->view_dispatcher, Ntag21xWriteViewId, write_view);
@@ -353,6 +362,7 @@ void proxmark5_app_free(Proxmark5App* app) {
 
     view_dispatcher_remove_view(app->view_dispatcher, Ntag21xActionsViewId);
     view_dispatcher_remove_view(app->view_dispatcher, Ntag21xTextViewId);
+    view_dispatcher_remove_view(app->view_dispatcher, Ntag21xUrlViewId);
     view_dispatcher_remove_view(app->view_dispatcher, Ntag21xWriteViewId);
     submenu_free(app->ntag21x_actions);
     ntag21x_write_page_free(app->ntag21x_write);

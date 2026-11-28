@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check Type 2 NDEF parsing and text replacement."""
+"""Check Type 2 NDEF parsing and writing."""
 
 import os
 import shlex
@@ -156,6 +156,44 @@ int main(void) {
     other[sizeof(uri)] = 0xfe;
     assert(!type2_ndef_replace_text(other, sizeof(other), "Hi"));
     assert(!memcmp(other, uri, sizeof(uri)) && other[sizeof(uri)] == 0xfe);
+
+    uint8_t url_data[144] = {0x03, 0, 0xfe};
+    url_data[40] = 0x5a;
+    assert(type2_ndef_replace_url(url_data, sizeof(url_data), "example.com/ntag215", true));
+    const uint8_t https_header[] = {0x03, 24, 0xd1, 1, 20, 'U', 4};
+    assert(!memcmp(url_data, https_header, sizeof(https_header)));
+    assert(type2_ndef_read(url_data, sizeof(url_data), text, sizeof(text)) == Type2NdefUri);
+    assert(strcmp(text, "https://example.com/ntag215") == 0);
+    assert(type2_ndef_replace_url(url_data, sizeof(url_data), "a.b", false));
+    assert(type2_ndef_read(url_data, sizeof(url_data), text, sizeof(text)) == Type2NdefUri);
+    assert(strcmp(text, "http://a.b") == 0);
+    for(size_t i = 11; i < 40; i++) assert(url_data[i] == 0);
+    assert(url_data[40] == 0x5a);
+
+    uint8_t before[sizeof(url_data)];
+    memcpy(before, url_data, sizeof(before));
+    assert(!type2_ndef_replace_url(url_data, sizeof(url_data), "https://a.b", true));
+    assert(!type2_ndef_replace_url(url_data, sizeof(url_data), "/path", true));
+    assert(!type2_ndef_replace_url(url_data, sizeof(url_data), "a.b/a b", true));
+    assert(!type2_ndef_replace_url(url_data, sizeof(url_data), "", true));
+    assert(!memcmp(before, url_data, sizeof(before)));
+    memcpy(before, data, sizeof(data));
+    assert(!type2_ndef_replace_url(data, sizeof(data), "a.b", true));
+    assert(!memcmp(before, data, sizeof(data)));
+
+    uint8_t large_url[257] = {0};
+    char long_address[251];
+    memset(long_address, 'a', sizeof(long_address));
+    long_address[1] = '/';
+    long_address[249] = '\0';
+    assert(!type2_ndef_replace_url(large_url, sizeof(large_url) - 1, long_address, true));
+    assert(type2_ndef_replace_url(large_url, sizeof(large_url), long_address, true));
+    assert(large_url[1] == 254 && large_url[256] == 0xfe);
+    assert(type2_ndef_read(large_url, sizeof(large_url), text, sizeof(text)) == Type2NdefUri);
+    assert(strcmp(text + 8, long_address) == 0);
+    long_address[249] = 'a';
+    long_address[250] = '\0';
+    assert(!type2_ndef_replace_url(large_url, sizeof(large_url), long_address, true));
     return 0;
 }
 '''

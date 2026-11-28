@@ -381,25 +381,30 @@ Type2NdefResult type2_ndef_read(
     return Type2NdefEmpty;
 }
 
-bool type2_ndef_replace_text(uint8_t* data, size_t size, const char* text) {
-    static const uint8_t record[] = {0x03, 0, 0xd1, 1, 0, 'T', 2, 'e', 'n'};
-    size_t length = 0;
-    for(; text[length]; length++) {
-        if((unsigned char)text[length] < 0x20 || (unsigned char)text[length] > 0x7e) return false;
-    }
-    size_t end = sizeof(record) + length + 1;
-    if(!length || end > size || length + 7 >= 0xff) return false;
+static bool replace_record(
+    uint8_t* data, size_t size, uint8_t type, const uint8_t* prefix, size_t prefix_size,
+    const char* value) {
+    size_t length = strlen(value);
+    if(!length || length >= 0xff - 4 - prefix_size) return false;
+    size_t message_size = 4 + prefix_size + length;
+    size_t end = 2 + message_size + 1;
+    if(end > size) return false;
 
     size_t old_end = 0;
     if(data[0] == 0x03) {
-        size_t message_size = data[1];
-        old_end = 2 + message_size + 1;
+        size_t old_message_size = data[1];
+        old_end = 2 + old_message_size + 1;
         if(old_end > size || data[old_end - 1] != 0xfe) return false;
-        if(message_size &&
-           (message_size < 5 || data[2] != 0xd1 || data[3] != 1 ||
-            data[4] + 4U != message_size || data[5] != 'T' ||
-            (data[6] & 0xc0) || (data[6] & 0x3f) >= data[4])) {
-            return false;
+        if(old_message_size) {
+            if(old_message_size < 5 || data[2] != 0xd1 || data[3] != 1 ||
+               data[4] + 4U != old_message_size || data[5] != type) {
+                return false;
+            }
+            if(type == 'T') {
+                if((data[6] & 0xc0) || (data[6] & 0x3f) >= data[4]) return false;
+            } else if(data[4] < 2 || data[6] >= sizeof(uri_prefixes) / sizeof(uri_prefixes[0])) {
+                return false;
+            }
         }
     } else if(data[0] == 0xfe) {
         old_end = 1;
@@ -413,10 +418,36 @@ bool type2_ndef_replace_text(uint8_t* data, size_t size, const char* text) {
         if(data[i]) return false;
     }
     for(size_t i = end; i < old_end; i++) data[i] = 0;
+    const uint8_t record[] = {0x03, message_size, 0xd1, 1, prefix_size + length, type};
     memcpy(data, record, sizeof(record));
-    data[1] = length + 7;
-    data[4] = length + 3;
-    memcpy(data + sizeof(record), text, length);
+    memcpy(data + sizeof(record), prefix, prefix_size);
+    memcpy(data + sizeof(record) + prefix_size, value, length);
     data[end - 1] = 0xfe;
     return true;
+}
+
+bool type2_ndef_replace_text(uint8_t* data, size_t size, const char* text) {
+    for(size_t i = 0; text[i]; i++) {
+        if((unsigned char)text[i] < 0x20 || (unsigned char)text[i] > 0x7e) return false;
+    }
+    static const uint8_t prefix[] = {2, 'e', 'n'};
+    return replace_record(data, size, 'T', prefix, sizeof(prefix), text);
+}
+
+bool type2_ndef_url_address_valid(const char* address) {
+    size_t host_size = strcspn(address, "/?#");
+    if(!host_size || address[host_size - 1] == ':') return false;
+    for(const char* ch = address; *ch; ch++) {
+        if((unsigned char)*ch <= 0x20 || (unsigned char)*ch > 0x7e || strchr("\"<>\\^\x60{|}", *ch)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool type2_ndef_replace_url(uint8_t* data, size_t size, const char* address, bool https) {
+    if(!type2_ndef_url_address_valid(address)) return false;
+    // NFC Forum URI RTD prefix codes, also in PM3 client/src/nfc/ndef.c.
+    const uint8_t prefix[] = {https ? 0x04 : 0x03};
+    return replace_record(data, size, 'U', prefix, sizeof(prefix), address);
 }

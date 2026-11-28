@@ -12,8 +12,11 @@ Ntag21xWritePage* ntag21x_write_page_alloc(
 void ntag21x_write_page_free(Ntag21xWritePage* page);
 View* ntag21x_write_page_get_view(Ntag21xWritePage* page);
 View* ntag21x_write_page_get_input_view(Ntag21xWritePage* page);
-void ntag21x_write_page_edit(Ntag21xWritePage* page, const Ntag21xPages* tag);
+View* ntag21x_write_page_get_url_view(Ntag21xWritePage* page);
+void ntag21x_write_page_edit(
+    Ntag21xWritePage* page, const Ntag21xPages* tag, Ntag21xWriteFormat format);
 void ntag21x_write_page_confirm(Ntag21xWritePage* page);
+bool ntag21x_write_page_is_url(const Ntag21xWritePage* page);
 void ntag21x_write_page_wait(Ntag21xWritePage* page);
 
 #endif

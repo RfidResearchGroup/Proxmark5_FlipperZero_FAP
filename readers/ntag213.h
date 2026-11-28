@@ -10,6 +10,7 @@
 #define NTAG21X_PAGE_BYTES 4U
 #define NTAG21X_MAX_READ_PAGES 226U
 #define NTAG21X_TEXT_MAX 247U
+#define NTAG21X_URL_MAX 249U
 
 typedef struct {
     uint8_t bytes[NTAG21X_MAX_READ_PAGES * NTAG21X_PAGE_BYTES];
@@ -27,7 +28,14 @@ typedef struct {
 const Ntag21xModel* ntag21x_model_for_version(const uint8_t version[NTAG21X_VERSION_BYTES]);
 void ntag21x_pages_uid(const Ntag21xPages* pages, uint8_t uid[NTAG21X_UID_BYTES]);
 bool ntag21x_pages_valid(const Ntag21xPages* pages);
-size_t ntag21x_write_text_max(const Ntag21xPages* pages);
+
+typedef enum {
+    Ntag21xWriteText,
+    Ntag21xWriteHttps,
+    Ntag21xWriteHttp,
+} Ntag21xWriteFormat;
+
+size_t ntag21x_write_value_max(const Ntag21xPages* pages, Ntag21xWriteFormat format);
 
 typedef enum {
     Ntag21xWriteChecking,
@@ -48,9 +56,10 @@ typedef enum {
 typedef void (*Ntag21xWriteProgress)(
     Ntag21xWriteStage stage, size_t done, size_t total, void* context);
 
-Ntag21xWriteResult ntag21x_write_text(
+Ntag21xWriteResult ntag21x_write_ndef(
     const Ntag21xPages* expected,
-    const char* text,
+    Ntag21xWriteFormat format,
+    const char* value,
     Ntag21xWriteProgress progress,
     void* context,
     bool* cleanup_ok);
