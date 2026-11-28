@@ -1,7 +1,9 @@
 #include <dialogs/dialogs.h>
 #include <flipper_format/flipper_format.h>
 #include <furi.h>
+#include <fmps_cxt_icons.h>
 #include <storage/storage.h>
+#include "saved_file_browser.h"
 #include "saved_tag_read.h"
 
 #define TAG_READ_DIR APP_DATA_PATH("tag-reads")
@@ -178,12 +180,15 @@ bool saved_tag_read_browse(FuriString* text) {
     DialogsApp* dialogs = furi_record_open(RECORD_DIALOGS);
     bool loaded = false;
     if(dir) {
-        DialogsFileBrowserOptions options;
-        dialog_file_browser_set_basic_options(&options, TAG_READ_EXT, NULL);
-        options.base_path = furi_string_get_cstr(dir);
-        options.hide_ext = true;
         FuriString* selected = furi_string_alloc();
-        if(dialog_file_browser_show(dialogs, selected, dir, &options)) {
+        if(saved_file_browse(
+               storage,
+               dialogs,
+               selected,
+               furi_string_get_cstr(dir),
+               TAG_READ_EXT,
+               &I_pm5_tag_file_10px,
+               NULL)) {
             SavedTagRead tag = {0};
             loaded = read_tag(storage, furi_string_get_cstr(selected), &tag);
             if(loaded) format_tag(text, &tag);
