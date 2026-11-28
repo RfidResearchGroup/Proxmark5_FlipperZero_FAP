@@ -12,6 +12,7 @@ typedef struct {
 static const char* const main_page_items[MainPageChoiceCount] = {
     [MainPageRead] = "Read",
     [MainPageSaved] = "Saved",
+    [MainPageCapture] = "Capture",
     [MainPageHardware] = "Hardware",
 };
 

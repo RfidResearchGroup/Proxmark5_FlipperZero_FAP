@@ -1,7 +1,7 @@
 #include <furi.h>
 #include "bigbuf.h"
 #include "../pages/saved_tag_read.h"
-#include "lf_capture.h"
+#include "proxmark5_alloc.h"
 #include "proxmark5_com.h"
 #include "proxmark5_frame.h"
 #include "simple_readers.h"
@@ -101,7 +101,7 @@ static bool t5577_manchester_config(const uint8_t* samples, size_t size, uint32_
 }
 
 static int read_t5577_config(uint8_t config[T5577_CONFIG_SIZE]) {
-    uint8_t* samples = lf_capture_alloc(T5577_SAMPLE_COUNT);
+    uint8_t* samples = proxmark5_try_alloc(T5577_SAMPLE_COUNT);
     if(!samples) return PM3_EMALLOC;
     int status = t5577_capture_config(samples);
     if(status == PM3_ETIMEOUT && !proxmark5_frame_operation_cancelled() &&

@@ -1,6 +1,7 @@
 #include <stdatomic.h>
 #include <furi_hal.h>
 #include <string.h>
+#include "proxmark5_alloc.h"
 #include "proxmark5_com.h"
 #include "proxmark5_frame.h"
 #include "proxmark5_uart.h"
@@ -11,7 +12,9 @@
 #define PROXMARK5_UART_HANDSHAKE_MSG "iamf0rupm5"
 #define PROXMARK5_LOG_TAG            "Proxmark5_COM"
 
-#define BUFFER_SIZE 600 // Proxmark5 data packet max size is 512bytes.
+#define BUFFER_SIZE 600
+#define NG_REPLY_WIRE_MAX \
+    (sizeof(PacketResponseNGPreamble) + PM3_CMD_DATA_WIRE_MAX + sizeof(PacketResponseNGPostamble))
 #define SYNC_BYTE 0x55
 // Sync preamble, sent before every frame in the same CS-held transaction,
 // so PM5's polled SPI1 reception has a wide enough window to notice the
@@ -38,9 +41,11 @@ typedef struct {
     // right after, since a reply typically lands within tens of ms.
     volatile uint32_t last_send_tick;
 
-    // RX packet buffer stored in context (heap-backed via com_context)
     uint8_t packet[BUFFER_SIZE + REPLY_TRAILER_SIZE];
     uint8_t spi_scratch[COMMAND_FRAME_CAPACITY];
+    FuriMutex* large_reply_mutex;
+    uint8_t* large_reply;
+    size_t large_reply_size;
 } Proxmark5ComContext;
 
 // Global context for proxmark5 communication, it will be initialized in proxmark5_com_init
@@ -49,6 +54,30 @@ static Proxmark5ComContext* com_context = NULL;
 
 void proxmark5_com_set_waiting(bool waiting) {
     atomic_store_explicit(&com_context->waiting_for_reply, waiting, memory_order_relaxed);
+}
+
+bool proxmark5_com_prepare_large_reply(size_t payload_size) {
+    if(payload_size > PM3_CMD_DATA_WIRE_MAX) return false;
+    size_t wire_size = sizeof(PacketResponseNGPreamble) + payload_size +
+                       sizeof(PacketResponseNGPostamble) + REPLY_TRAILER_SIZE;
+    uint8_t* buffers = proxmark5_try_alloc(2 * wire_size);
+    if(!buffers) return false;
+
+    furi_mutex_acquire(com_context->large_reply_mutex, FuriWaitForever);
+    furi_assert(!com_context->large_reply);
+    com_context->large_reply = buffers;
+    com_context->large_reply_size = wire_size;
+    furi_mutex_release(com_context->large_reply_mutex);
+    return true;
+}
+
+void proxmark5_com_release_large_reply(void) {
+    furi_mutex_acquire(com_context->large_reply_mutex, FuriWaitForever);
+    uint8_t* buffers = com_context->large_reply;
+    com_context->large_reply = NULL;
+    com_context->large_reply_size = 0;
+    furi_mutex_release(com_context->large_reply_mutex);
+    free(buffers);
 }
 
 static uint16_t pm5_u16_le(const uint8_t* data) {
@@ -146,8 +175,20 @@ static int32_t proxmark5_com_spi_task(void* context) {
         }
 
         uint16_t data_length = pm5_u16_le(spi_len_header);
-        if(data_length == 0 || data_length > BUFFER_SIZE) {
+        uint8_t* packet = com_context->packet;
+        uint8_t* tx = com_context->spi_scratch;
+        bool large = data_length > BUFFER_SIZE && data_length <= NG_REPLY_WIRE_MAX;
+        size_t wire_size = data_length + REPLY_TRAILER_SIZE;
+        if(large) {
+            furi_mutex_acquire(com_context->large_reply_mutex, FuriWaitForever);
+            if(com_context->large_reply_size >= wire_size) {
+                packet = com_context->large_reply;
+                tx = packet + com_context->large_reply_size;
+            }
+        }
+        if(!data_length || (data_length > BUFFER_SIZE && packet == com_context->packet)) {
             proxmark5_spi_release();
+            if(large) furi_mutex_release(com_context->large_reply_mutex);
             if(data_length > 0) {
                 FURI_LOG_W(PROXMARK5_LOG_TAG, "Invalid SPI packet length: %u", data_length);
             }
@@ -159,28 +200,26 @@ static int32_t proxmark5_com_spi_task(void* context) {
 
         bool got_payload;
         if(data_length == sizeof("yes")) {
-            got_payload = proxmark5_spi_trx_raw(NULL, com_context->packet, data_length, 100);
+            got_payload = proxmark5_spi_trx_raw(NULL, packet, data_length, 100);
         } else {
             // Clock the payload and trailer together so scheduling cannot pause the transfer.
-            uint8_t* tx = com_context->spi_scratch;
             memset(tx, 0xff, data_length);
             memset(tx + data_length, SYNC_BYTE, REPLY_TRAILER_SIZE);
-            got_payload = proxmark5_spi_trx_dma_raw(
-                tx, com_context->packet, data_length + REPLY_TRAILER_SIZE, SPI_DMA_TIMEOUT_MS);
+            got_payload = proxmark5_spi_trx_dma_raw(tx, packet, wire_size, SPI_DMA_TIMEOUT_MS);
         }
         proxmark5_spi_release();
 
         if(!got_payload) {
+            if(large) furi_mutex_release(com_context->large_reply_mutex);
             FURI_LOG_W(PROXMARK5_LOG_TAG, "SPI receive timeout, packet dropped");
             furi_delay_ms(fast ? FAST_POLL_PENALTY_MS : PENALTY_POLL_MS);
             continue;
         }
 
-        if(proxmark5_com_update_handshake_match(com_context->packet, data_length)) {
-            continue;
-        }
-
-        if(!proxmark5_frame_handle_packet(com_context->packet, data_length)) {
+        bool consumed = proxmark5_com_update_handshake_match(packet, data_length) ||
+                        proxmark5_frame_handle_packet(packet, data_length);
+        if(large) furi_mutex_release(com_context->large_reply_mutex);
+        if(!consumed) {
             FURI_LOG_W(PROXMARK5_LOG_TAG, "Invalid SPI response frame, dropped");
         }
     }
@@ -220,7 +259,8 @@ void proxmark5_com_init(void) {
         return; // Already initialized
     }
 
-    com_context = malloc(sizeof(Proxmark5ComContext));
+    com_context = calloc(1, sizeof(Proxmark5ComContext));
+    com_context->large_reply_mutex = furi_mutex_alloc(FuriMutexTypeNormal);
     // Thread for RX COM
     com_context->thread_rx_spi = NULL;
     com_context->thread_running = false;
@@ -244,6 +284,8 @@ void proxmark5_com_init(void) {
  */
 void proxmark5_com_deinit(void) {
     proxmark5_com_rx_spi_thread_stop();
+    proxmark5_com_release_large_reply();
+    furi_mutex_free(com_context->large_reply_mutex);
     // After the RX thread is joined, so nothing can touch the ring afterwards.
     proxmark5_frame_deinit();
     proxmark5_cc_ctrl_deinit();

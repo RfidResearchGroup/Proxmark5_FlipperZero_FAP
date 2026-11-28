@@ -15,6 +15,14 @@
 #define PM3_OLD_RESPONSE_HEADER_SIZE (sizeof(uint64_t) * 4U)
 
 typedef struct {
+    uint8_t* data;
+    size_t capacity;
+    size_t length;
+    uint16_t cmd;
+    int status;
+} CollectedReply;
+
+typedef struct {
     PacketResponseNG cache[PM3_RESPONSE_CACHE_SIZE];
     uint8_t head;
     uint8_t tail;
@@ -28,6 +36,7 @@ typedef struct {
     uint32_t sync_epoch;
     uint32_t sync_sequence;
     PacketResponseNG sync_reply;
+    CollectedReply collected;
 } Proxmark5FrameContext;
 
 static Proxmark5FrameContext frame_context;
@@ -44,6 +53,24 @@ static void proxmark5_frame_unlock(void) {
     }
 }
 
+void proxmark5_frame_collect_download(uint16_t cmd, uint8_t* data, size_t capacity) {
+    proxmark5_frame_lock();
+    furi_assert(data && capacity && !frame_context.collected.data);
+    frame_context.collected = (CollectedReply){
+        .data = data, .capacity = capacity, .cmd = cmd, .status = PM3_SUCCESS};
+    proxmark5_frame_unlock();
+}
+
+int proxmark5_frame_finish_download(size_t* length) {
+    proxmark5_frame_lock();
+    int status = frame_context.collected.status;
+    *length = frame_context.collected.length;
+    if(status == PM3_SUCCESS && !*length) status = PM3_ENODATA;
+    frame_context.collected = (CollectedReply){0};
+    proxmark5_frame_unlock();
+    return status;
+}
+
 static uint16_t pm5_u16_le(uint8_t* data) {
     return (uint16_t)data[0] | ((uint16_t)data[1] << 8);
 }
@@ -51,6 +78,30 @@ static uint16_t pm5_u16_le(uint8_t* data) {
 static uint32_t pm5_u32_le(uint8_t* data) {
     return (uint32_t)data[0] | ((uint32_t)data[1] << 8) | ((uint32_t)data[2] << 16) |
            ((uint32_t)data[3] << 24);
+}
+
+
+static bool collect_ng_download(uint16_t cmd, int status, uint8_t* data, size_t length) {
+    proxmark5_frame_lock();
+    CollectedReply* reply = &frame_context.collected;
+    bool matched = reply->data && reply->cmd == cmd;
+    if(matched && reply->status == PM3_SUCCESS) {
+        if(status != PM3_SUCCESS) {
+            reply->status = status;
+        } else if(length <= sizeof(uint32_t) || pm5_u32_le(data) != reply->length) {
+            reply->status = PM3_EPARTIAL;
+        } else {
+            size_t count = length - sizeof(uint32_t);
+            if(count > reply->capacity - reply->length) {
+                reply->status = PM3_EOVFLOW;
+            } else {
+                memcpy(reply->data + reply->length, data + sizeof(uint32_t), count);
+                reply->length += count;
+            }
+        }
+    }
+    proxmark5_frame_unlock();
+    return matched;
 }
 
 static uint64_t pm5_u64_le(uint8_t* data) {
@@ -144,6 +195,8 @@ static bool proxmark5_frame_handle_ng_packet(uint8_t* packet, size_t packet_len)
     }
 
     uint8_t* payload = packet + sizeof(PacketResponseNGPreamble);
+    if(ng && collect_ng_download(cmd, status, payload, payload_length)) return true;
+
     if(cmd == CMD_DEBUG_PRINT_STRING) {
         if(ng) {
             if(payload_length < sizeof(uint16_t)) {
@@ -194,9 +247,9 @@ static bool proxmark5_frame_handle_ng_packet(uint8_t* packet, size_t packet_len)
     response.crc = packet_crc;
 
     if(ng) {
-        size_t copy_len = payload_length > PM3_CMD_DATA_SIZE ? PM3_CMD_DATA_SIZE : payload_length;
-        memcpy(response.data.asBytes, payload, copy_len);
-        response.length = (uint16_t)copy_len;
+        if(payload_length > PM3_CMD_DATA_SIZE) return false;
+        memcpy(response.data.asBytes, payload, payload_length);
+        response.length = payload_length;
     } else {
         if(payload_length >= (sizeof(uint64_t) * 3U)) {
             response.oldarg[0] = pm5_u64_le(payload);

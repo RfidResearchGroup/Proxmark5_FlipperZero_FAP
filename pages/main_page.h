@@ -7,6 +7,7 @@
 typedef enum {
     MainPageRead,
     MainPageSaved,
+    MainPageCapture,
     MainPageHardware,
     MainPageChoiceCount,
 } MainPageChoice;
