@@ -8,6 +8,7 @@
 
 #define NTAG21X_USER_START 4U
 #define NTAG21X_MAX_USER_BYTES ((NTAG21X_MAX_READ_PAGES - NTAG21X_USER_START) * NTAG21X_PAGE_BYTES)
+#define NTAG21X_NDEF_DISPLAY_SIZE (NTAG21X_MAX_USER_BYTES + 32U) // Space for the URI prefix.
 #define NTAG21X_TIMEOUT_MS 2500U
 #define NTAG21X_SELECT_ATTEMPTS 10U
 #define NTAG21X_VERSION_TIMEOUT_ETU 2100U // About 20 ms.
@@ -150,7 +151,7 @@ static bool ntag21x_field_off(void) {
     return off;
 }
 
-static const char* ntag21x_format_text(
+static const char* ntag21x_format_ndef(
     const uint8_t* pages, const Ntag21xModel* model, char* details, size_t size) {
     details[0] = '\0';
     const uint8_t* capability = pages + 3 * NTAG21X_PAGE_BYTES;
@@ -161,12 +162,9 @@ static const char* ntag21x_format_text(
     if(capability[3] >> 4) return "NDEF: restricted";
 
     const uint8_t* data = pages + NTAG21X_USER_START * NTAG21X_PAGE_BYTES;
-    const char prefix[] = "NDEF text\n";
-    memcpy(details, prefix, sizeof(prefix));
-    Type2NdefResult status =
-        type2_ndef_read_text(data, data_size, details + sizeof(prefix) - 1, size - sizeof(prefix) + 1);
+    Type2NdefResult status = type2_ndef_read(data, data_size, details, size);
     if(status == Type2NdefText) return "NDEF text";
-    details[0] = '\0';
+    if(status == Type2NdefUri) return "NDEF URL";
     if(status == Type2NdefInvalid) return "NDEF: invalid";
     return status == Type2NdefEmpty ? "NDEF: empty" : "NDEF: unsupported";
 }
@@ -184,8 +182,8 @@ static void ntag21x_format_result(SimpleReaderResult* result) {
         uid[0], uid[1], uid[2], uid[3], uid[4], uid[5], uid[6]);
     unsigned user_size = (model->read_pages - NTAG21X_USER_START) * NTAG21X_PAGE_BYTES;
     snprintf(result->lines[1], sizeof(result->lines[1]), "%s  %u bytes", model->name, user_size);
-    char text[NTAG21X_MAX_USER_BYTES + 16];
-    const char* ndef = ntag21x_format_text(pages->bytes, model, text, sizeof(text));
+    char text[NTAG21X_NDEF_DISPLAY_SIZE];
+    const char* ndef = ntag21x_format_ndef(pages->bytes, model, text, sizeof(text));
     snprintf(result->lines[2], sizeof(result->lines[2]), "%s", ndef);
     result->line_count = 3;
 }
@@ -194,9 +192,11 @@ static void ntag21x_format_details(const uint8_t* data, FuriString* text) {
     const Ntag21xPages* pages = (const Ntag21xPages*)data;
     const Ntag21xModel* model = ntag21x_model_for_version(pages->version);
     furi_assert(model);
-    char ndef[NTAG21X_MAX_USER_BYTES + 16];
-    ntag21x_format_text(pages->bytes, model, ndef, sizeof(ndef));
-    furi_string_printf(text, "%s%sUser pages 04-%u\n", ndef, *ndef ? "\n\n" : "", model->read_pages - 1U);
+    char ndef[NTAG21X_NDEF_DISPLAY_SIZE];
+    const char* label = ntag21x_format_ndef(pages->bytes, model, ndef, sizeof(ndef));
+    furi_string_reset(text);
+    if(*ndef) furi_string_printf(text, "%s\n%s\n\n", label, ndef);
+    furi_string_cat_printf(text, "User pages 04-%u\n", model->read_pages - 1U);
     for(unsigned page = NTAG21X_USER_START; page < model->read_pages; page++) {
         const uint8_t* bytes = pages->bytes + page * NTAG21X_PAGE_BYTES;
         furi_string_cat_printf(

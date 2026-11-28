@@ -1,10 +1,38 @@
 #include "type2_ndef.h"
 #include <stdbool.h>
+#include <string.h>
+
+static const char* const uri_prefixes[] = {
+    "", "http://www.", "https://www.", "http://", "https://", "tel:", "mailto:",
+    "ftp://anonymous:anonymous@", "ftp://ftp.", "ftps://", "sftp://", "smb://",
+    "nfs://", "ftp://", "dav://", "news:", "telnet://", "imap:", "rtsp://", "urn:",
+    "pop:", "sip:", "sips:", "tftp:", "btspp://", "btl2cap://", "btgoep://",
+    "tcpobex://", "irdaobex://", "file://", "urn:epc:id:", "urn:epc:tag:",
+    "urn:epc:pat:", "urn:epc:raw:", "urn:epc:", "urn:nfc:",
+};
+
+static Type2NdefResult read_uri(
+    const uint8_t* payload, size_t size, char* text, size_t text_size) {
+    if(size < 2) return Type2NdefInvalid;
+    if(payload[0] >= sizeof(uri_prefixes) / sizeof(uri_prefixes[0])) return Type2NdefOther;
+    const char* prefix = uri_prefixes[payload[0]];
+    size_t prefix_size = strlen(prefix);
+    if(prefix_size >= text_size || size > text_size - prefix_size) return Type2NdefInvalid;
+    for(size_t i = 1; i < size; i++) {
+        if(payload[i] < 0x20 || payload[i] == 0x7f) return Type2NdefInvalid;
+    }
+    memcpy(text, prefix, prefix_size);
+    memcpy(text + prefix_size, payload + 1, size - 1);
+    text[prefix_size + size - 1] = '\0';
+    return Type2NdefUri;
+}
 
 static Type2NdefResult read_ndef_message(
     const uint8_t* data, size_t size, char* text, size_t text_size) {
     bool first = true;
-    bool found = false;
+    bool found_text = false;
+    const uint8_t* uri = NULL;
+    size_t uri_size = 0;
     while(size >= 2) {
         uint8_t flags = *data++;
         uint8_t type_size = *data++;
@@ -38,7 +66,7 @@ static Type2NdefResult read_ndef_message(
             if(!payload_size || (payload[0] & 0x40)) return Type2NdefInvalid;
             size_t language_size = payload[0] & 0x3f;
             if(language_size >= payload_size) return Type2NdefInvalid;
-            if(!found && !(payload[0] & 0x80)) {
+            if(!found_text && !(payload[0] & 0x80)) {
                 size_t count = payload_size - 1 - language_size;
                 if(count >= text_size) return Type2NdefInvalid;
                 for(size_t i = 0; i < count; i++) {
@@ -46,21 +74,26 @@ static Type2NdefResult read_ndef_message(
                     text[i] = ((byte < 0x20 && byte != '\n') || byte == 0x7f) ? '.' : byte;
                 }
                 text[count] = '\0';
-                found = true;
+                found_text = true;
             }
+        } else if(tnf == 1 && type_size == 1 && data[0] == 'U' && !uri) {
+            uri = payload;
+            uri_size = payload_size;
         }
 
         data = payload + payload_size;
         size -= header_size + payload_size;
         if(flags & 0x40) {
             if(size) return Type2NdefInvalid;
-            return found ? Type2NdefText : Type2NdefOther;
+            if(found_text) return Type2NdefText;
+            if(uri) return read_uri(uri, uri_size, text, text_size);
+            return Type2NdefOther;
         }
     }
     return Type2NdefInvalid;
 }
 
-Type2NdefResult type2_ndef_read_text(
+Type2NdefResult type2_ndef_read(
     const uint8_t* data, size_t size, char* text, size_t text_size) {
     if(!text_size) return Type2NdefInvalid;
     text[0] = '\0';
@@ -80,7 +113,7 @@ Type2NdefResult type2_ndef_read_text(
         if(type == 0x03) {
             if(!length) return Type2NdefEmpty;
             Type2NdefResult result = read_ndef_message(data + offset, length, text, text_size);
-            if(result != Type2NdefText) text[0] = '\0';
+            if(result != Type2NdefText && result != Type2NdefUri) text[0] = '\0';
             return result;
         }
         offset += length;
