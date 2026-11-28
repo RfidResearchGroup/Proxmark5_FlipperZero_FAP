@@ -47,6 +47,18 @@ static void fmps_cxt_home_selected(void* context, MainPageChoice choice) {
 
 static uint32_t saved_record_previous_callback(void* context);
 
+static void open_reader_actions(void* context) {
+    fmps_cxt_menu_selected(context, OperateNtag21xActions);
+}
+
+static void confirm_ntag21x_write(void* context) {
+    fmps_cxt_menu_selected(context, OperateConfirmNtag21x);
+}
+
+static void finish_ntag21x_write(void* context) {
+    fmps_cxt_menu_selected(context, OperateFinishNtag21x);
+}
+
 static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
     Proxmark5App* app = context;
 
@@ -75,6 +87,37 @@ static bool fmps_cxt_custom_event_callback(void* context, uint32_t event) {
         }
         return true;
     }
+    case OperateNtag21xActions:
+        submenu_set_selected_item(app->ntag21x_actions, OperateSaveNtag21x);
+        view_dispatcher_switch_to_view(app->view_dispatcher, Ntag21xActionsViewId);
+        return true;
+    case OperateSaveNtag21x: {
+        Ntag21xPages pages;
+        if(simple_reader_page_get_live_data(
+               app->simple_reader_page, &simple_reader_ntag21x, (uint8_t*)&pages)) {
+            saved_ntag21x_save(&pages);
+        }
+        view_dispatcher_switch_to_view(app->view_dispatcher, SimpleReaderPageViewId);
+        return true;
+    }
+    case OperateWriteNtag21x: {
+        Ntag21xPages pages;
+        if(simple_reader_page_get_live_data(
+               app->simple_reader_page, &simple_reader_ntag21x, (uint8_t*)&pages)) {
+            ntag21x_write_page_edit(app->ntag21x_write, &pages);
+            view_dispatcher_switch_to_view(app->view_dispatcher, Ntag21xTextViewId);
+        }
+        return true;
+    }
+    case OperateConfirmNtag21x:
+        ntag21x_write_page_confirm(app->ntag21x_write);
+        view_dispatcher_switch_to_view(app->view_dispatcher, Ntag21xWriteViewId);
+        return true;
+    case OperateFinishNtag21x:
+        ntag21x_write_page_wait(app->ntag21x_write);
+        simple_reader_page_start(app->simple_reader_page, &simple_reader_ntag21x);
+        view_dispatcher_switch_to_view(app->view_dispatcher, SimpleReaderPageViewId);
+        return true;
     case OperateBrowseEm4100:
         saved_em4100_browse();
         return true;
@@ -177,6 +220,16 @@ static void open_reader_details(void* context) {
     view_dispatcher_switch_to_view(app->view_dispatcher, SavedTagReadViewId);
 }
 
+static uint32_t ntag21x_text_previous(void* context) {
+    UNUSED(context);
+    return Ntag21xActionsViewId;
+}
+
+static uint32_t ntag21x_write_previous(void* context) {
+    ntag21x_write_page_wait(context);
+    return SimpleReaderPageViewId;
+}
+
 static uint32_t simple_reader_previous_callback(void* context) {
     bool saved = simple_reader_page_is_saved(context);
     simple_reader_page_stop(context);
@@ -216,10 +269,26 @@ Proxmark5App* proxmark5_app_alloc() {
     view_set_previous_callback(saved_result, saved_record_previous_callback);
     view_dispatcher_add_view(app->view_dispatcher, SavedTagReadViewId, saved_result);
 
-    app->simple_reader_page = simple_reader_page_create(open_reader_details, app);
+    app->simple_reader_page = simple_reader_page_create(open_reader_details, open_reader_actions, app);
     View* reader = simple_reader_page_get_view(app->simple_reader_page);
     view_set_previous_callback(reader, simple_reader_previous_callback);
     view_dispatcher_add_view(app->view_dispatcher, SimpleReaderPageViewId, reader);
+
+    app->ntag21x_actions = submenu_alloc();
+    submenu_set_header(app->ntag21x_actions, "NTAG21x");
+    submenu_add_item(app->ntag21x_actions, "Save dump", OperateSaveNtag21x, fmps_cxt_menu_selected, app);
+    submenu_add_item(app->ntag21x_actions, "Write NDEF text", OperateWriteNtag21x, fmps_cxt_menu_selected, app);
+    View* actions = submenu_get_view(app->ntag21x_actions);
+    view_set_previous_callback(actions, reader_details_previous_callback);
+    view_dispatcher_add_view(app->view_dispatcher, Ntag21xActionsViewId, actions);
+
+    app->ntag21x_write = ntag21x_write_page_alloc(confirm_ntag21x_write, finish_ntag21x_write, app);
+    View* text_input = ntag21x_write_page_get_input_view(app->ntag21x_write);
+    view_set_previous_callback(text_input, ntag21x_text_previous);
+    view_dispatcher_add_view(app->view_dispatcher, Ntag21xTextViewId, text_input);
+    View* write_view = ntag21x_write_page_get_view(app->ntag21x_write);
+    view_set_previous_callback(write_view, ntag21x_write_previous);
+    view_dispatcher_add_view(app->view_dispatcher, Ntag21xWriteViewId, write_view);
 
     // Create and add ReadHitag2 page to the view dispatcher
     // The left "Back" button returns to the functions menu, same destination as the
@@ -279,8 +348,14 @@ void proxmark5_app_free(Proxmark5App* app) {
     status_page_stop_worker(app->status_page);
     antenna_check_page_stop_worker(app->antenna_check_page);
     live_voltage_page_stop_worker(app->live_voltage_page);
+    ntag21x_write_page_wait(app->ntag21x_write);
     simple_reader_page_stop_worker(app->simple_reader_page);
 
+    view_dispatcher_remove_view(app->view_dispatcher, Ntag21xActionsViewId);
+    view_dispatcher_remove_view(app->view_dispatcher, Ntag21xTextViewId);
+    view_dispatcher_remove_view(app->view_dispatcher, Ntag21xWriteViewId);
+    submenu_free(app->ntag21x_actions);
+    ntag21x_write_page_free(app->ntag21x_write);
     view_dispatcher_remove_view(app->view_dispatcher, SimpleReaderPageViewId);
     simple_reader_page_free(app->simple_reader_page);
     view_dispatcher_remove_view(app->view_dispatcher, SavedTagReadViewId);

@@ -18,6 +18,7 @@ struct SimpleReaderPage {
     View* view;
     FuriThread* worker;
     SimpleReaderDetailsCallback on_details;
+    SimpleReaderDetailsCallback on_actions;
     void* callback_context;
     // The view model lock protects the worker state.
     const SimpleReader* next_reader;
@@ -81,7 +82,8 @@ static void simple_reader_draw(Canvas* canvas, void* context) {
     if(model->status == PM3_SUCCESS) {
         if(model->reader->format_details) {
             elements_button_right(canvas, "Data");
-            if(!model->saved && model->reader->save) elements_button_left(canvas, "Save");
+            if(!model->saved && model->reader->has_actions) elements_button_left(canvas, "Menu");
+            else if(!model->saved && model->reader->save) elements_button_left(canvas, "Save");
         } else if(!model->saved && model->reader->save) {
             elements_button_right(canvas, "Save");
         }
@@ -175,6 +177,10 @@ static bool simple_reader_input(InputEvent* event, void* context) {
             page->on_details(page->callback_context);
             return true;
         }
+        if(!saved && event->key == InputKeyLeft && reader->has_actions) {
+            page->on_actions(page->callback_context);
+            return true;
+        }
         if(!saved && reader->save && (event->key == InputKeyRight || reader->format_details)) {
             reader->save(data);
             return true;
@@ -221,10 +227,22 @@ bool simple_reader_page_format_details(SimpleReaderPage* page, FuriString* text)
     return available;
 }
 
-SimpleReaderPage* simple_reader_page_create(SimpleReaderDetailsCallback on_details, void* context) {
+bool simple_reader_page_get_live_data(
+    SimpleReaderPage* page, const SimpleReader* reader, uint8_t* data) {
+    SimpleReaderModel* model = view_get_model(page->view);
+    bool available = !model->running && !model->saved && model->reader == reader &&
+                     model->status == PM3_SUCCESS && model->result.data;
+    if(available) memcpy(data, model->result.data, reader->data_size);
+    view_commit_model(page->view, false);
+    return available;
+}
+
+SimpleReaderPage* simple_reader_page_create(
+    SimpleReaderDetailsCallback on_details, SimpleReaderDetailsCallback on_actions, void* context) {
     SimpleReaderPage* page = calloc(1, sizeof(SimpleReaderPage));
     page->view = view_alloc();
     page->on_details = on_details;
+    page->on_actions = on_actions;
     page->callback_context = context;
     view_set_context(page->view, page);
     view_set_draw_callback(page->view, simple_reader_draw);

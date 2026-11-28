@@ -15,6 +15,7 @@
 #include "pages/antenna_check_page.h"
 #include "pages/live_voltage_page.h"
 #include "pages/simple_reader_page.h"
+#include "pages/ntag213_write_page.h"
 
 typedef enum {
     // The main page of the app, showing the connection status and some basic info
@@ -32,6 +33,9 @@ typedef enum {
     SavedMenuViewId,
     SavedTagReadViewId,
     SimpleReaderPageViewId,
+    Ntag21xActionsViewId,
+    Ntag21xTextViewId,
+    Ntag21xWriteViewId,
 } Proxmark5ViewId;
 
 typedef struct {
@@ -47,6 +51,8 @@ typedef struct {
     AntennaCheckPage* antenna_check_page;
     LiveVoltagePage* live_voltage_page;
     SimpleReaderPage* simple_reader_page;
+    Submenu* ntag21x_actions;
+    Ntag21xWritePage* ntag21x_write;
     TextBox* saved_tag_view;
     FuriString* saved_tag_text;
 } Proxmark5App;
