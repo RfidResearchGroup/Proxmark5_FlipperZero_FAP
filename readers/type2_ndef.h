@@ -10,6 +10,7 @@ typedef enum {
     Type2NdefUri,
     Type2NdefTextAndUri,
     Type2NdefSmartPoster,
+    Type2NdefVCard,
     Type2NdefOther,
     Type2NdefInvalid,
 } Type2NdefResult;

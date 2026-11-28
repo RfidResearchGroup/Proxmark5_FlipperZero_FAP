@@ -1,6 +1,8 @@
 #include "type2_ndef.h"
 #include <stdbool.h>
+#include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 static const char* const uri_prefixes[] = {
     "", "http://www.", "https://www.", "http://", "https://", "tel:", "mailto:",
@@ -38,6 +40,110 @@ static Type2NdefResult append_uri(
     return result;
 }
 
+static bool append_field(
+    char* text, size_t text_size, const char* label, const uint8_t* value, size_t value_size) {
+    size_t used = strlen(text);
+    size_t label_size = strlen(label);
+    if((used != 0) + label_size + value_size >= text_size - used) return false;
+    if(used) text[used++] = '\n';
+    memcpy(text + used, label, label_size);
+    used += label_size;
+    for(size_t i = 0; i < value_size; i++) {
+        uint8_t byte = value[i];
+        text[used++] = (byte < 0x20 || byte == 0x7f) ? '.' : byte;
+    }
+    text[used] = '\0';
+    return true;
+}
+
+static bool matches_case_insensitive(const uint8_t* bytes, size_t size, const char* expected) {
+    return size == strlen(expected) && strncasecmp((const char*)bytes, expected, size) == 0;
+}
+
+static char* vcard_value(char* line) {
+    bool quoted = false;
+    for(char* ch = line; *ch; ch++) {
+        if(*ch == '"') quoted = !quoted;
+        if(*ch == ':' && !quoted) return ch + 1;
+    }
+    return NULL;
+}
+
+static void vcard_unescape(char* value) {
+    char* out = value;
+    for(const char* ch = value; *ch; ch++) {
+        if(*ch == '\\' && ch[1] && strchr("\\,;nN", ch[1])) {
+            ch++;
+            *out++ = (*ch == 'n' || *ch == 'N') ? ' ' : *ch;
+        } else {
+            *out++ = *ch;
+        }
+    }
+    *out = '\0';
+}
+
+static Type2NdefResult format_vcard(char* card, char* text, size_t text_size) {
+    static const char* const names[] = {"FN", "TEL", "EMAIL"};
+    static const char* const labels[] = {"Name: ", "Tel: ", "Email: "};
+    bool shown[sizeof(names) / sizeof(names[0])] = {false};
+    char* line = strchr(card, '\n');
+    if(!line) return Type2NdefInvalid;
+    *line++ = '\0';
+    if(strcasecmp(card, "BEGIN:VCARD") != 0) return Type2NdefInvalid;
+
+    while(line) {
+        char* next = strchr(line, '\n');
+        if(next) *next++ = '\0';
+        if(strcasecmp(line, "END:VCARD") == 0) {
+            return *text ? Type2NdefVCard : Type2NdefOther;
+        }
+        char* value = vcard_value(line);
+        if(value && *value) {
+            size_t key_size = strcspn(line, ";:");
+            const char* key = line;
+            for(size_t i = 0; i < key_size; i++) {
+                if(line[i] == '.') key = line + i + 1;
+            }
+            key_size -= key - line;
+            for(size_t i = 0; i < sizeof(shown) / sizeof(shown[0]); i++) {
+                if(shown[i] || !matches_case_insensitive((const uint8_t*)key, key_size, names[i])) {
+                    continue;
+                }
+                if(i == 1 && strncasecmp(value, "tel:", 4) == 0) value += 4;
+                if(!*value) break;
+                vcard_unescape(value);
+                if(!append_field(text, text_size, labels[i], (const uint8_t*)value, strlen(value))) {
+                    return Type2NdefInvalid;
+                }
+                shown[i] = true;
+                break;
+            }
+        }
+        line = next;
+    }
+    return Type2NdefInvalid;
+}
+
+static Type2NdefResult read_vcard(
+    const uint8_t* payload, size_t size, char* text, size_t text_size) {
+    if(!size || memchr(payload, 0, size)) return Type2NdefInvalid;
+    char* card = malloc(size + 1);
+    if(!card) return Type2NdefInvalid;
+    size_t used = 0;
+    for(size_t i = 0; i < size; i++) {
+        if(payload[i] == '\r' && i + 1 < size && payload[i + 1] == '\n') continue;
+        if(payload[i] == '\n' && i + 1 < size && (payload[i + 1] == ' ' || payload[i + 1] == '\t')) {
+            i++;
+            continue;
+        }
+        card[used++] = payload[i];
+    }
+    card[used] = '\0';
+    Type2NdefResult result = format_vcard(card, text, text_size);
+    free(card);
+    return result;
+}
+
 static Type2NdefResult read_ndef_message(
     const uint8_t* data, size_t size, char* text, size_t text_size, bool in_poster) {
     bool first = true;
@@ -46,6 +152,8 @@ static Type2NdefResult read_ndef_message(
     size_t uri_size = 0;
     const uint8_t* poster = NULL;
     size_t poster_size = 0;
+    const uint8_t* vcard = NULL;
+    size_t vcard_size = 0;
     while(size >= 2) {
         uint8_t flags = *data++;
         uint8_t type_size = *data++;
@@ -98,6 +206,12 @@ static Type2NdefResult read_ndef_message(
         } else if(!in_poster && !poster && tnf == 1 && type_size == 2 && memcmp(data, "Sp", 2) == 0) {
             poster = payload;
             poster_size = payload_size;
+        } else if(
+            !in_poster && !vcard && tnf == 2 &&
+            (matches_case_insensitive(data, type_size, "text/vcard") ||
+             matches_case_insensitive(data, type_size, "text/x-vcard"))) {
+            vcard = payload;
+            vcard_size = payload_size;
         }
 
         data = payload + payload_size;
@@ -110,7 +224,9 @@ static Type2NdefResult read_ndef_message(
             }
             if(!uri) {
                 if(in_poster) return Type2NdefInvalid;
-                return found_text ? Type2NdefText : Type2NdefOther;
+                if(found_text) return Type2NdefText;
+                if(vcard) return read_vcard(vcard, vcard_size, text, text_size);
+                return Type2NdefOther;
             }
             Type2NdefResult result = found_text ? append_uri(uri, uri_size, text, text_size) :
                                                  read_uri(uri, uri_size, text, text_size);

@@ -13,6 +13,16 @@ TEST = r'''
 #include <string.h>
 #include "type2_ndef.h"
 
+static Type2NdefResult read_mime(
+    const char* type, const void* payload, size_t size, char* text, size_t text_size) {
+    size_t type_size = strlen(type);
+    assert(3 + type_size + size < 0xff);
+    uint8_t data[256] = {3, 3 + type_size + size, 0xd2, type_size, size};
+    memcpy(data + 5, type, type_size);
+    memcpy(data + 5 + type_size, payload, size);
+    return type2_ndef_read(data, 5 + type_size + size, text, text_size);
+}
+
 int main(void) {
     char text[900];
     const uint8_t tag[] = {
@@ -87,6 +97,20 @@ int main(void) {
     };
     assert(type2_ndef_read(poster_two_uris, sizeof(poster_two_uris), text, sizeof(text)) ==
            Type2NdefInvalid);
+
+    const char vcard[] =
+        "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Alex\\, Example\r\n"
+        "group.TEL;LABEL=\"desk: second floor\":tel:+1-202-555-0142\r\n"
+        "EMAIL:alex@exa\r\n mple.com\r\nEMAIL:second@example.com\r\nEND:VCARD\r\n";
+    const char contact[] = "Name: Alex, Example\nTel: +1-202-555-0142\nEmail: alex@example.com";
+    assert(read_mime("text/vcard", vcard, sizeof(vcard) - 1, text, sizeof(text)) == Type2NdefVCard);
+    assert(strcmp(text, contact) == 0);
+    assert(read_mime("Text/X-vCard", vcard, sizeof(vcard) - 1, text, sizeof(text)) == Type2NdefVCard);
+    assert(strcmp(text, contact) == 0);
+    assert(read_mime("text/vcard", vcard, sizeof(vcard) - 4, text, sizeof(text)) == Type2NdefInvalid);
+    assert(text[0] == '\0');
+    assert(read_mime("text/vcard", vcard, sizeof(vcard) - 1, text, 6) == Type2NdefInvalid);
+    assert(text[0] == '\0');
     return 0;
 }
 '''
